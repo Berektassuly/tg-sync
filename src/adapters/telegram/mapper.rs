@@ -3,7 +3,27 @@
 //! Extracts Chat, Message, MediaReference from grammers_client tl types.
 
 use crate::domain::{Chat, ChatType, MediaReference, MediaType, Message};
+use grammers_client::peer::Peer;
 use grammers_client::tl;
+
+/// Map a grammers Peer to domain ChatType.
+///
+/// * `Peer::User` → Private (DM).
+/// * `Peer::Group` → Group or Supergroup (Supergroup when megagroup).
+/// * `Peer::Channel` → Channel (broadcast).
+pub fn chat_type_from_peer(peer: &Peer) -> ChatType {
+    match peer {
+        Peer::User(_) => ChatType::Private,
+        Peer::Group(g) => {
+            if g.is_megagroup() {
+                ChatType::Supergroup
+            } else {
+                ChatType::Group
+            }
+        }
+        Peer::Channel(_) => ChatType::Channel,
+    }
+}
 
 /// Map a grammers Dialog/PeerRef to domain Chat (used when building Chat in client).
 #[allow(dead_code)]
@@ -11,13 +31,13 @@ pub fn dialog_to_chat_from_ref(
     id: i64,
     name: &str,
     username: Option<&str>,
-    chat_type: ChatType,
+    kind: ChatType,
 ) -> Chat {
     Chat {
         id,
         title: name.to_string(),
         username: username.map(String::from),
-        chat_type,
+        kind,
     }
 }
 

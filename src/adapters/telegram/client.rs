@@ -4,13 +4,12 @@
 //! with min_id for incremental sync.
 
 use crate::adapters::telegram::mapper;
-use crate::domain::{Chat, ChatType, DomainError, MediaReference, Message};
+use crate::domain::{Chat, DomainError, MediaReference, Message};
 use crate::ports::TgGateway;
 use async_trait::async_trait;
 use grammers_client::tl;
 use grammers_client::Client;
 use grammers_client::InvocationError;
-use grammers_session::types::PeerKind;
 use std::path::Path;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -51,16 +50,12 @@ impl TgGateway for GrammersTgGateway {
                 .name()
                 .map(String::from)
                 .unwrap_or_else(|| peer.id().to_string());
-            let chat_type = match peer.id().kind() {
-                PeerKind::User | PeerKind::UserSelf => ChatType::User,
-                PeerKind::Chat => ChatType::Group,
-                PeerKind::Channel => ChatType::Channel,
-            };
+            let kind = mapper::chat_type_from_peer(peer);
             chats.push(Chat {
                 id,
                 title,
                 username: peer.username().map(String::from),
-                chat_type,
+                kind,
             });
         }
         Ok(chats)

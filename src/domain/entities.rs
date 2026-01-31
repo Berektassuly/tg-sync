@@ -11,15 +11,21 @@ pub struct Chat {
     pub title: String,
     pub username: Option<String>,
     #[serde(rename = "type")]
-    pub chat_type: ChatType,
+    pub kind: ChatType,
 }
 
+/// Classification of a Telegram chat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ChatType {
-    User,
+    /// Private DM with a user.
+    #[serde(alias = "user")]
+    Private,
+    /// Small group chat.
     Group,
+    /// Supergroup (megagroup).
     Supergroup,
+    /// Broadcast channel.
     Channel,
 }
 

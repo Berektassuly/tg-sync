@@ -1,4 +1,4 @@
-//! tg-archiver: Incremental Telegram chat backup with Hexagonal Architecture.
+//! tg-sync: Incremental Telegram chat backup with Hexagonal Architecture.
 
 pub mod adapters;
 pub mod domain;

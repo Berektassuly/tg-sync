@@ -1,9 +1,9 @@
 [package]
-name = "tg-archiver"
+name = "tg-sync"
 version = "0.1.0"
 edition = "2021"
 description = "CLI userbot utility to incrementally backup Telegram chats/groups and media, process with Chatpack"
-authors = ["tg-archiver"]
+authors = ["Berektassuly"]
 license = "MIT OR Apache-2.0"
 
 [dependencies]

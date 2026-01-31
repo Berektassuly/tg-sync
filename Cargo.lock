@@ -1786,7 +1786,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tg-archiver"
+name = "tg-sync"
 version = "0.1.0"
 dependencies = [
  "anyhow",

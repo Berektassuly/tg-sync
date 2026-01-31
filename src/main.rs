@@ -2,12 +2,12 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use tg_archiver::adapters::persistence::{fs_repo::FsRepo, state_json::StateJson};
-use tg_archiver::adapters::telegram::client::GrammersTgGateway;
-use tg_archiver::adapters::tools::chatpack::ChatpackProcessor;
-use tg_archiver::adapters::ui::tui::TuiInputPort;
-use tg_archiver::ports::{InputPort, RepoPort, StatePort, TgGateway};
-use tg_archiver::usecases::{MediaWorker, SyncService};
+use tg_sync::adapters::persistence::{fs_repo::FsRepo, state_json::StateJson};
+use tg_sync::adapters::telegram::client::GrammersTgGateway;
+use tg_sync::adapters::tools::chatpack::ChatpackProcessor;
+use tg_sync::adapters::ui::tui::TuiInputPort;
+use tg_sync::ports::{InputPort, RepoPort, StatePort, TgGateway};
+use tg_sync::usecases::{MediaWorker, SyncService};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -19,14 +19,14 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let cfg = tg_archiver::shared::config::AppConfig::load().unwrap_or_default();
+    let cfg = tg_sync::shared::config::AppConfig::load().unwrap_or_default();
     let api_hash = cfg
         .api_hash
         .clone()
-        .or_else(|| std::env::var("TG_ARCHIVER_API_HASH").ok())
+        .or_else(|| std::env::var("TG_SYNC_API_HASH").ok())
         .unwrap_or_default();
     if api_hash.is_empty() {
-        anyhow::bail!("Set TG_ARCHIVER_API_HASH (env or .env). Get from https://my.telegram.org");
+        anyhow::bail!("Set TG_SYNC_API_HASH (env or .env). Get from https://my.telegram.org");
     }
 
     let data_dir = cfg.data_dir.as_deref().unwrap_or("./data").to_string();
@@ -81,14 +81,14 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Create grammers Client. Uses MemorySession (session not persisted by default).
-/// Requires TG_ARCHIVER_API_ID (and TG_ARCHIVER_API_HASH for login).
+/// Requires TG_SYNC_API_ID (and TG_SYNC_API_HASH for login).
 async fn create_telegram_client(
-    cfg: &tg_archiver::shared::config::AppConfig,
+    cfg: &tg_sync::shared::config::AppConfig,
 ) -> anyhow::Result<grammers_client::Client> {
     let api_id = cfg
         .api_id
         .or_else(|| {
-            std::env::var("TG_ARCHIVER_API_ID")
+            std::env::var("TG_SYNC_API_ID")
                 .ok()
                 .and_then(|s| s.parse().ok())
         })
@@ -96,7 +96,7 @@ async fn create_telegram_client(
 
     if api_id == 0 {
         anyhow::bail!(
-            "Set TG_ARCHIVER_API_ID (and TG_ARCHIVER_API_HASH) in .env. Get from https://my.telegram.org"
+            "Set TG_SYNC_API_ID (and TG_SYNC_API_HASH) in .env. Get from https://my.telegram.org"
         );
     }
 

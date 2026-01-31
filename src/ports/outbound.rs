@@ -2,7 +2,7 @@
 //!
 //! Implemented by adapters.
 
-use crate::domain::{Chat, DomainError, MediaReference, Message};
+use crate::domain::{Chat, DomainError, MediaReference, Message, SignInResult};
 
 /// Telegram API gateway. Fetch dialogs, messages, media.
 #[async_trait::async_trait]
@@ -47,6 +47,22 @@ pub trait StatePort: Send + Sync {
 
     /// Update last message ID after successful save.
     async fn set_last_message_id(&self, chat_id: i64, message_id: i32) -> Result<(), DomainError>;
+}
+
+/// Authentication port. Check auth state and perform login/2FA via Telegram.
+#[async_trait::async_trait]
+pub trait AuthPort: Send + Sync {
+    /// Returns true if the session is already authorized.
+    async fn is_authenticated(&self) -> Result<bool, DomainError>;
+
+    /// Request a login code for the given phone. Must be followed by sign_in with the code.
+    async fn request_login_code(&self, phone: &str, api_hash: &str) -> Result<(), DomainError>;
+
+    /// Submit the code received via Telegram/SMS. Returns Success or PasswordRequired (2FA).
+    async fn sign_in(&self, code: &str) -> Result<SignInResult, DomainError>;
+
+    /// Complete 2FA after sign_in returned PasswordRequired. Call once per flow.
+    async fn check_password(&self, password: &[u8]) -> Result<(), DomainError>;
 }
 
 /// Processor port. Invoke external tool (e.g. Chatpack) on archived data.

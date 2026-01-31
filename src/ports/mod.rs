@@ -7,4 +7,4 @@ pub mod inbound;
 pub mod outbound;
 
 pub use inbound::InputPort;
-pub use outbound::{ProcessorPort, RepoPort, StatePort, TgGateway};
+pub use outbound::{AuthPort, ProcessorPort, RepoPort, StatePort, TgGateway};

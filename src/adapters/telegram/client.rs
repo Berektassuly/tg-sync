@@ -11,23 +11,24 @@ use grammers_client::tl;
 use grammers_client::Client;
 use grammers_client::InvocationError;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
-/// Telegram gateway adapter. Wraps grammers Client (injected from main).
+/// Telegram gateway adapter. Wraps grammers Client (shared with auth adapter via Arc).
 pub struct GrammersTgGateway {
-    client: Mutex<Client>,
+    client: Arc<Mutex<Client>>,
     /// If set, sleep this many ms before each message-history request (rate limiting).
     export_delay_ms: Option<u64>,
 }
 
 impl GrammersTgGateway {
-    /// Create gateway with an already-connected Client.
+    /// Create gateway with shared client (Arc<Mutex<Client>>) so auth and gateway can share the same session.
     /// `export_delay_ms`: optional delay in ms before each history batch request (e.g. 500 for throttling).
-    pub fn new(client: Client, export_delay_ms: Option<u64>) -> Self {
+    pub fn new(client: Arc<Mutex<Client>>, export_delay_ms: Option<u64>) -> Self {
         Self {
-            client: Mutex::new(client),
+            client,
             export_delay_ms,
         }
     }

@@ -51,6 +51,13 @@ pub struct MediaReference {
     pub opaque_ref: String,
 }
 
+/// Result of a sign-in attempt. Either success or 2FA password required.
+#[derive(Debug, Clone)]
+pub enum SignInResult {
+    Success,
+    PasswordRequired { hint: Option<String> },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MediaType {

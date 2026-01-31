@@ -1,15 +1,15 @@
-//! Wiring & DI. Setup adapters, inject into services, run UI.
+//! Wiring & DI. Entry point: bootstrap adapters, inject into services, run UI.
+//! No business logic here; authentication is delegated to AuthService.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use tg_sync::adapters::persistence::{fs_repo::FsRepo, state_json::StateJson};
-use tg_sync::adapters::telegram::client::GrammersTgGateway;
+use tg_sync::adapters::telegram::{auth_adapter::GrammersAuthAdapter, client::GrammersTgGateway};
 use tg_sync::adapters::tools::chatpack::ChatpackProcessor;
 use tg_sync::adapters::ui::tui::TuiInputPort;
-use tg_sync::ports::{InputPort, RepoPort, StatePort, TgGateway};
-use tg_sync::usecases::{MediaWorker, SyncService};
+use tg_sync::ports::{AuthPort, InputPort, RepoPort, StatePort, TgGateway};
+use tg_sync::usecases::{AuthService, MediaWorker, SyncService};
 use tokio::sync::mpsc;
-use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[tokio::main]
@@ -33,16 +33,26 @@ async fn main() -> anyhow::Result<()> {
 
     let data_dir = cfg.data_dir.as_deref().unwrap_or("./data").to_string();
     let state_path = PathBuf::from(&data_dir).join("state.json");
-    // Session path: config/env or default under data_dir so session persists across restarts.
     let session_path = cfg
         .session_path
         .as_deref()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(&data_dir).join("session.db"));
 
-    // --- Adapters ---
+    // --- Telegram client (shared between auth and gateway) ---
     let tg_client = create_telegram_client(&cfg, &session_path).await?;
-    ensure_authorized(&tg_client, &api_hash).await?;
+    let tg_client = Arc::new(tokio::sync::Mutex::new(tg_client));
+
+    // --- Auth: adapter + service, then run flow ---
+    let auth_adapter: Arc<dyn AuthPort> =
+        Arc::new(GrammersAuthAdapter::new(Arc::clone(&tg_client)));
+    let auth_service = AuthService::new(auth_adapter, api_hash);
+    auth_service
+        .run_auth_flow()
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    // --- Gateway (same client as auth) ---
     let tg: Arc<dyn TgGateway> = Arc::new(GrammersTgGateway::new(tg_client, cfg.export_delay_ms));
 
     let repo: Arc<dyn RepoPort> = Arc::new(FsRepo::new(&data_dir));
@@ -110,7 +120,6 @@ async fn create_telegram_client(
         );
     }
 
-    // Open file-based session (creates file if missing; loads existing auth if present).
     let session = tg_sync::adapters::telegram::session::open_file_session(session_path).await?;
     let session = Arc::new(session);
     let pool = grammers_client::SenderPool::new(session, api_id);
@@ -121,58 +130,4 @@ async fn create_telegram_client(
     let client = grammers_client::Client::new(handle);
 
     Ok(client)
-}
-
-/// Ensure the client is logged in. If not, run phone + code (and 2FA if needed).
-async fn ensure_authorized(client: &grammers_client::Client, api_hash: &str) -> anyhow::Result<()> {
-    if client
-        .is_authorized()
-        .await
-        .map_err(|e| anyhow::anyhow!("{}", e))?
-    {
-        info!("Already authorized");
-        return Ok(());
-    }
-
-    warn!("Not authorized. Running login flow (phone + code from Telegram app/SMS).");
-    let phone = inquire::Text::new("Phone number (e.g. +1234567890):")
-        .prompt()
-        .map_err(|e| anyhow::anyhow!("input: {}", e))?;
-    let token = client
-        .request_login_code(&phone, api_hash)
-        .await
-        .map_err(|e| anyhow::anyhow!("request_login_code: {}", e))?;
-    let code = inquire::Text::new("Login code from Telegram:")
-        .prompt()
-        .map_err(|e| anyhow::anyhow!("input: {}", e))?;
-
-    match client.sign_in(&token, &code).await {
-        Ok(user) => {
-            let name = user.first_name().unwrap_or("user");
-            info!("Signed in as {}", name);
-            Ok(())
-        }
-        Err(grammers_client::SignInError::PasswordRequired(password_token)) => {
-            let hint = password_token.hint().unwrap_or("(no hint)");
-            let prompt = format!("2FA password (hint: {}):", hint);
-            let password = inquire::Password::new(&prompt)
-                .prompt()
-                .map_err(|e| anyhow::anyhow!("input: {}", e))?;
-            let _user = client
-                .check_password(password_token, password.as_bytes())
-                .await
-                .map_err(|e| anyhow::anyhow!("check_password: {}", e))?;
-            info!("Signed in (2FA completed)");
-            Ok(())
-        }
-        Err(grammers_client::SignInError::InvalidCode) => {
-            anyhow::bail!("Invalid login code. Run again and enter the correct code.")
-        }
-        Err(grammers_client::SignInError::SignUpRequired) => {
-            anyhow::bail!(
-                "Sign-up required. Create an account with the official Telegram app first."
-            )
-        }
-        Err(e) => Err(anyhow::anyhow!("sign in: {}", e)),
-    }
 }

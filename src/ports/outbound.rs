@@ -10,15 +10,17 @@ pub trait TgGateway: Send + Sync {
     /// Fetch all dialogs (chats) the user participates in.
     async fn get_dialogs(&self) -> Result<Vec<Chat>, DomainError>;
 
-    /// Fetch messages from a chat. Uses `min_id` for incremental sync:
-    /// only messages with id > min_id are returned.
+    /// Fetch messages from a chat. Uses `min_id` and `max_id` for incremental sync:
+    /// only messages with min_id < id < max_id are returned (when max_id > 0).
     ///
     /// - `min_id`: 0 = fetch from beginning; N = fetch only messages with id > N
+    /// - `max_id`: 0 = no upper bound; N = fetch only messages with id < N (for pagination)
     /// - `limit`: max messages per request
     async fn get_messages(
         &self,
         chat_id: i64,
         min_id: i32,
+        max_id: i32,
         limit: i32,
     ) -> Result<Vec<Message>, DomainError>;
 

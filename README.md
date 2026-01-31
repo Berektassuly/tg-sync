@@ -40,16 +40,17 @@ tg-sync/
 └── .env.example
 ```
 
-### Sync Engine (Delta Sync)
+### Sync Engine (Delta Sync with Pagination)
 
-The **Sync Engine** uses **`min_id` state tracking** to fetch only **new** messages (delta sync):
+The **Sync Engine** uses **`min_id` / `max_id` state tracking** to fetch all **new** messages (delta sync):
 
 1. **StatePort** (e.g. `StateJson`) stores the last synced message ID per chat (`last_message_id`).
-2. **SyncService** calls `get_messages(chat_id, min_id, limit)` where `min_id = last_message_id`.
-3. The **TgGateway** adapter passes `min_id` to Telegram’s `GetHistory`; only messages with `id > min_id` are requested.
-4. After messages are saved via **RepoPort**, the state is updated with the new max message ID.
+2. **SyncService** paginates over batches: calls `get_messages(chat_id, min_id, max_id, limit)` where `min_id = last_message_id` and `max_id` starts at 0 (no upper bound).
+3. The **TgGateway** adapter passes `min_id` and `max_id` to Telegram’s `GetHistory`; messages with `min_id < id < max_id` are returned (or `id > min_id` when `max_id = 0`).
+4. After each batch, `max_id` is set to the minimum ID in the batch to fetch the next chunk of older messages. The loop continues until an empty batch or fewer than `limit` messages are returned.
+5. After all messages are saved via **RepoPort**, the state is updated with the new max message ID.
 
-This minimizes API calls and avoids re-downloading already archived messages.
+This fetches all pending messages (no cutoff) and avoids re-downloading already archived messages.
 
 ### Async Media Pipeline (Producer–Consumer)
 

@@ -65,6 +65,7 @@ impl TgGateway for GrammersTgGateway {
         &self,
         chat_id: i64,
         min_id: i32,
+        max_id: i32,
         limit: i32,
     ) -> Result<Vec<Message>, DomainError> {
         use tl::enums::messages::Messages;
@@ -107,7 +108,7 @@ impl TgGateway for GrammersTgGateway {
                 offset_date: 0,
                 add_offset: 0,
                 limit,
-                max_id: 0,
+                max_id,
                 min_id,
                 hash: 0,
             };

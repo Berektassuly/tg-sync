@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tg_sync::adapters::persistence::{sqlite_repo::SqliteRepo, state_json::StateJson};
+use tg_sync::adapters::persistence::{fs_repo::FsRepo, state_json::StateJson};
 use tg_sync::adapters::telegram::{auth_adapter::GrammersAuthAdapter, client::GrammersTgGateway};
 use tg_sync::adapters::tools::chatpack::ChatpackProcessor;
 use tg_sync::adapters::ui::tui::TuiInputPort;
@@ -34,12 +34,21 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let data_dir = cfg.data_dir.as_deref().unwrap_or("./data").to_string();
-    let state_path = PathBuf::from(&data_dir).join("state.json");
+    let data_path = PathBuf::from(&data_dir);
+    let data_dir_abs = data_path
+        .canonicalize()
+        .unwrap_or_else(|_| data_path.clone());
+    info!(
+        path = %data_dir_abs.display(),
+        "data directory: {}",
+        data_dir_abs.display()
+    );
+    let state_path = data_path.join("state.json");
     let session_path = cfg
         .session_path
         .as_deref()
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(&data_dir).join("session.db"));
+        .unwrap_or_else(|| data_path.join("session.db"));
 
     // --- Telegram client (shared between auth and gateway) ---
     let tg_client = create_telegram_client(&cfg, &session_path).await?;
@@ -57,11 +66,7 @@ async fn main() -> anyhow::Result<()> {
     // --- Gateway (same client as auth) ---
     let tg: Arc<dyn TgGateway> = Arc::new(GrammersTgGateway::new(tg_client, cfg.export_delay_ms));
 
-    let repo: Arc<dyn RepoPort> = Arc::new(
-        SqliteRepo::connect(&data_dir)
-            .await
-            .map_err(|e| anyhow::anyhow!("{}", e))?,
-    );
+    let repo: Arc<dyn RepoPort> = Arc::new(FsRepo::new(&data_path));
     let state_impl = StateJson::new(&state_path);
     state_impl
         .load()
@@ -73,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
 
     // --- Media pipeline ---
     let (media_tx, media_rx) = mpsc::unbounded_channel();
-    let media_dir = PathBuf::from(&data_dir).join("media");
+    let media_dir = data_path.join("media");
     tokio::fs::create_dir_all(&media_dir)
         .await
         .map_err(|e| anyhow::anyhow!("create media dir: {}", e))?;

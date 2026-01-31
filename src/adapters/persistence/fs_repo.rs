@@ -1,10 +1,12 @@
-//! Implements RepoPort. Saves messages as JSON per chat (append/merge).
+//! Implements RepoPort. Saves messages as human-readable JSON per chat (append/merge).
+//! One file per chat: data/{chat_id}.json
 
 use crate::domain::{DomainError, Message};
 use crate::ports::RepoPort;
 use std::path::Path;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
+use tracing::info;
 
 /// File-system repository. One JSON file per chat.
 pub struct FsRepo {
@@ -52,6 +54,13 @@ impl RepoPort for FsRepo {
         f.write_all(json.as_bytes())
             .await
             .map_err(|e| DomainError::Repo(e.to_string()))?;
+        let abs_path = path.canonicalize().unwrap_or_else(|_| path.clone());
+        info!(
+            path = %abs_path.display(),
+            chat_id,
+            count = messages.len(),
+            "saved messages to disk (JSON)"
+        );
         Ok(())
     }
 

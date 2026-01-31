@@ -2,11 +2,13 @@
 //!
 //! Uses the same libsql backend as grammers-session to avoid duplicate SQLite symbol link errors.
 //! Single `messages` table with (chat_id, id) as primary key; batch saves use INSERT OR IGNORE.
+//! All chats share one database file: data/messages.db
 
 use crate::domain::{DomainError, MediaReference, Message};
 use crate::ports::RepoPort;
 use libsql::{params, Database};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use tracing::info;
 
 const MESSAGES_TABLE: &str = r#"
 CREATE TABLE IF NOT EXISTS messages (
@@ -23,8 +25,10 @@ const MESSAGES_INDEX: &str =
     "CREATE INDEX IF NOT EXISTS idx_messages_chat_date ON messages (chat_id, date DESC)";
 
 /// SQLite repository. One database file (messages.db) in the given base directory.
+/// Chat IDs are stored as a column; all chats share the same file.
 pub struct SqliteRepo {
     db: Database,
+    db_path: PathBuf,
 }
 
 impl SqliteRepo {
@@ -46,7 +50,10 @@ impl SqliteRepo {
         conn.execute(MESSAGES_INDEX, ())
             .await
             .map_err(|e| DomainError::Repo(e.to_string()))?;
-        Ok(Self { db })
+        Ok(Self {
+            db,
+            db_path: db_path.to_path_buf(),
+        })
     }
 
     fn media_to_json(media: &Option<MediaReference>) -> Option<String> {
@@ -64,6 +71,16 @@ impl RepoPort for SqliteRepo {
         if messages.is_empty() {
             return Ok(());
         }
+        let abs_path = self
+            .db_path
+            .canonicalize()
+            .unwrap_or_else(|_| self.db_path.clone());
+        info!(
+            path = %abs_path.display(),
+            chat_id,
+            count = messages.len(),
+            "saved messages to disk"
+        );
         let conn = self
             .db
             .connect()

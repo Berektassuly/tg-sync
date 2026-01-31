@@ -8,6 +8,9 @@ pub struct AppConfig {
     pub api_hash: Option<String>,
     pub data_dir: Option<String>,
     pub session_path: Option<String>,
+    /// Optional delay in ms between message-history API requests (rate limiting). Read from EXPORT_DELAY_MS.
+    #[serde(default)]
+    pub export_delay_ms: Option<u64>,
 }
 
 impl AppConfig {
@@ -18,6 +21,13 @@ impl AppConfig {
         if let Ok(path) = std::env::var("TG_SYNC_CONFIG") {
             c = c.add_source(config::File::with_name(&path));
         }
-        c.build()?.try_deserialize()
+        let mut cfg: Self = c.build()?.try_deserialize()?;
+        // EXPORT_DELAY_MS is read directly (no TG_SYNC_ prefix) so .env can use EXPORT_DELAY_MS=500
+        if let Ok(s) = std::env::var("EXPORT_DELAY_MS") {
+            if let Ok(ms) = s.parse::<u64>() {
+                cfg.export_delay_ms = Some(ms);
+            }
+        }
+        Ok(cfg)
     }
 }

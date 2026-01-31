@@ -35,7 +35,7 @@ async fn main() -> anyhow::Result<()> {
     // --- Adapters ---
     let tg_client = create_telegram_client(&cfg).await?;
     ensure_authorized(&tg_client, &api_hash).await?;
-    let tg: Arc<dyn TgGateway> = Arc::new(GrammersTgGateway::new(tg_client));
+    let tg: Arc<dyn TgGateway> = Arc::new(GrammersTgGateway::new(tg_client, cfg.export_delay_ms));
 
     let repo: Arc<dyn RepoPort> = Arc::new(FsRepo::new(&data_dir));
     let state_impl = StateJson::new(&state_path);

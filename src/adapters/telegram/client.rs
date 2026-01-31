@@ -19,13 +19,17 @@ use tracing::{debug, warn};
 /// Telegram gateway adapter. Wraps grammers Client (injected from main).
 pub struct GrammersTgGateway {
     client: Mutex<Client>,
+    /// If set, sleep this many ms before each message-history request (rate limiting).
+    export_delay_ms: Option<u64>,
 }
 
 impl GrammersTgGateway {
     /// Create gateway with an already-connected Client.
-    pub fn new(client: Client) -> Self {
+    /// `export_delay_ms`: optional delay in ms before each history batch request (e.g. 500 for throttling).
+    pub fn new(client: Client, export_delay_ms: Option<u64>) -> Self {
         Self {
             client: Mutex::new(client),
+            export_delay_ms,
         }
     }
 }
@@ -69,6 +73,10 @@ impl TgGateway for GrammersTgGateway {
         limit: i32,
     ) -> Result<Vec<Message>, DomainError> {
         use tl::enums::messages::Messages;
+
+        if let Some(ms) = self.export_delay_ms {
+            tokio::time::sleep(Duration::from_millis(ms)).await;
+        }
 
         let peer = {
             let guard = self.client.lock().await;

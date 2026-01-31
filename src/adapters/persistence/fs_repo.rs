@@ -54,4 +54,22 @@ impl RepoPort for FsRepo {
             .map_err(|e| DomainError::Repo(e.to_string()))?;
         Ok(())
     }
+
+    async fn get_messages(
+        &self,
+        chat_id: i64,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<crate::domain::Message>, DomainError> {
+        let path = self.chat_path(chat_id);
+        let existing: Vec<Message> = match fs::read_to_string(&path).await {
+            Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+            Err(_) => return Ok(vec![]),
+        };
+        let mut sorted: Vec<Message> = existing;
+        sorted.sort_by(|a, b| b.date.cmp(&a.date)); // newest first
+        let skip = offset as usize;
+        let take = limit as usize;
+        Ok(sorted.into_iter().skip(skip).take(take).collect())
+    }
 }

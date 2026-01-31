@@ -38,3 +38,6 @@ dotenv = "0.15"
 
 # Async trait (ports)
 async-trait = "0.1"
+
+# SQLite (persistence; same backend as grammers-session to avoid duplicate symbol link errors)
+libsql = "0.9"

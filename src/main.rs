@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use tg_sync::adapters::persistence::{fs_repo::FsRepo, state_json::StateJson};
+use tg_sync::adapters::persistence::{sqlite_repo::SqliteRepo, state_json::StateJson};
 use tg_sync::adapters::telegram::{auth_adapter::GrammersAuthAdapter, client::GrammersTgGateway};
 use tg_sync::adapters::tools::chatpack::ChatpackProcessor;
 use tg_sync::adapters::ui::tui::TuiInputPort;
@@ -55,7 +55,11 @@ async fn main() -> anyhow::Result<()> {
     // --- Gateway (same client as auth) ---
     let tg: Arc<dyn TgGateway> = Arc::new(GrammersTgGateway::new(tg_client, cfg.export_delay_ms));
 
-    let repo: Arc<dyn RepoPort> = Arc::new(FsRepo::new(&data_dir));
+    let repo: Arc<dyn RepoPort> = Arc::new(
+        SqliteRepo::connect(&data_dir)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))?,
+    );
     let state_impl = StateJson::new(&state_path);
     state_impl
         .load()

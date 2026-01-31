@@ -32,11 +32,19 @@ pub trait TgGateway: Send + Sync {
     ) -> Result<(), DomainError>;
 }
 
-/// Repository port. Persist chat logs (JSON).
+/// Repository port. Persist and load chat messages.
 #[async_trait::async_trait]
 pub trait RepoPort: Send + Sync {
-    /// Append messages to the chat's log file.
+    /// Save messages (append/merge). Implementations use INSERT OR IGNORE / dedupe by message id.
     async fn save_messages(&self, chat_id: i64, messages: &[Message]) -> Result<(), DomainError>;
+
+    /// Load messages for a chat, newest first. Use limit/offset for pagination.
+    async fn get_messages(
+        &self,
+        chat_id: i64,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<Message>, DomainError>;
 }
 
 /// State port. Track last synced message ID per chat for incremental sync.

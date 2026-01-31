@@ -33,9 +33,15 @@ async fn main() -> anyhow::Result<()> {
 
     let data_dir = cfg.data_dir.as_deref().unwrap_or("./data").to_string();
     let state_path = PathBuf::from(&data_dir).join("state.json");
+    // Session path: config/env or default under data_dir so session persists across restarts.
+    let session_path = cfg
+        .session_path
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(&data_dir).join("session.db"));
 
     // --- Adapters ---
-    let tg_client = create_telegram_client(&cfg).await?;
+    let tg_client = create_telegram_client(&cfg, &session_path).await?;
     ensure_authorized(&tg_client, &api_hash).await?;
     let tg: Arc<dyn TgGateway> = Arc::new(GrammersTgGateway::new(tg_client, cfg.export_delay_ms));
 
@@ -82,10 +88,12 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Create grammers Client. Uses MemorySession (session not persisted by default).
-/// Requires TG_SYNC_API_ID (and TG_SYNC_API_HASH for login).
+/// Create grammers Client with persistent session storage.
+/// Loads existing session from `session_path` if present; otherwise a new session is created
+/// and will be saved after login. Requires TG_SYNC_API_ID (and TG_SYNC_API_HASH for login).
 async fn create_telegram_client(
     cfg: &tg_sync::shared::config::AppConfig,
+    session_path: &std::path::Path,
 ) -> anyhow::Result<grammers_client::Client> {
     let api_id = cfg
         .api_id
@@ -102,7 +110,9 @@ async fn create_telegram_client(
         );
     }
 
-    let session = Arc::new(grammers_session::storages::MemorySession::default());
+    // Open file-based session (creates file if missing; loads existing auth if present).
+    let session = tg_sync::adapters::telegram::session::open_file_session(session_path).await?;
+    let session = Arc::new(session);
     let pool = grammers_client::SenderPool::new(session, api_id);
     let handle = pool.handle.clone();
     tokio::spawn(async move {

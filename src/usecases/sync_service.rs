@@ -45,10 +45,7 @@ impl SyncService {
         let mut latest_max_id = last_id;
 
         loop {
-            let mut messages = self
-                .tg
-                .get_messages(chat_id, min_id, max_id, limit)
-                .await?;
+            let mut messages = self.tg.get_messages(chat_id, min_id, max_id, limit).await?;
 
             // Defensive: only keep messages within our range (API may return boundary)
             messages.retain(|m| m.id > last_id && (max_id == 0 || m.id < max_id));
@@ -92,7 +89,9 @@ impl SyncService {
         }
 
         if total_synced > 0 {
-            self.state.set_last_message_id(chat_id, latest_max_id).await?;
+            self.state
+                .set_last_message_id(chat_id, latest_max_id)
+                .await?;
             info!(
                 chat_id,
                 count = total_synced,

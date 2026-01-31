@@ -61,7 +61,13 @@ impl MediaWorker {
     ) -> Result<(), DomainError> {
         let ext = extension_for_media_type(media_ref.media_type);
         let filename = format!("{}_{}.{}", media_ref.chat_id, media_ref.message_id, ext);
-        let dest = base.join(filename);
+        let dest = base.join(&filename);
+
+        if tokio::fs::try_exists(&dest).await.unwrap_or(false) {
+            debug!(path = %dest.display(), "File already exists: skipping download");
+            return Ok(());
+        }
+
         tg.download_media(media_ref, &dest).await
     }
 }

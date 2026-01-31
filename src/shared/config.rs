@@ -11,6 +11,10 @@ pub struct AppConfig {
     /// Optional delay in ms between message-history API requests (rate limiting). Read from EXPORT_DELAY_MS.
     #[serde(default)]
     pub export_delay_ms: Option<u64>,
+
+    /// Delay in ms between sync batch requests (rate limiting to avoid FLOOD_WAIT). Read from SYNC_DELAY_MS.
+    #[serde(default)]
+    pub sync_delay_ms: Option<u64>,
 }
 
 impl AppConfig {
@@ -28,6 +32,17 @@ impl AppConfig {
                 cfg.export_delay_ms = Some(ms);
             }
         }
+        // SYNC_DELAY_MS: delay between message batch requests in sync loop (avoid FLOOD_WAIT)
+        if let Ok(s) = std::env::var("SYNC_DELAY_MS") {
+            if let Ok(ms) = s.parse::<u64>() {
+                cfg.sync_delay_ms = Some(ms);
+            }
+        }
         Ok(cfg)
+    }
+
+    /// Returns sync delay in milliseconds. Defaults to 500 if unset or invalid.
+    pub fn sync_delay_ms_or_default(&self) -> u64 {
+        self.sync_delay_ms.unwrap_or(500)
     }
 }

@@ -7,7 +7,7 @@ use crate::ports::{InputPort, TgGateway};
 use crate::usecases::SyncService;
 use async_trait::async_trait;
 use inquire::ui::{Color, RenderConfig, StyleSheet, Styled};
-use inquire::{set_global_render_config, MultiSelect, Text};
+use inquire::{set_global_render_config, Confirm, MultiSelect, Text};
 use std::sync::Arc;
 
 /// Neon Purple (#bc13fe) for prompt prefix and accents.
@@ -95,7 +95,16 @@ impl InputPort for TuiInputPort {
             })
             .map(|c| c.id)
             .collect();
-        self.sync_service.sync_chats(&chat_ids, 100).await
+
+        let include_media = Confirm::new("Download media files?")
+            .with_default(true)
+            .with_help_message("Photos, videos, documents. Press Enter for Yes.")
+            .prompt()
+            .map_err(|e| DomainError::Auth(e.to_string()))?;
+
+        self.sync_service
+            .sync_chats(&chat_ids, 100, include_media)
+            .await
     }
 
     async fn run_auth(&self) -> Result<(), DomainError> {

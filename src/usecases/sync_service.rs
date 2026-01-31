@@ -5,10 +5,12 @@
 //!   by setting max_id = batch_min to fetch older chunks).
 //! - Sends media refs to mpsc channel for async download (non-blocking)
 //! - Updates state only after successful save
+//! - Configurable delay between batches (SYNC_DELAY_MS) to avoid FLOOD_WAIT
 
 use crate::domain::{DomainError, MediaReference};
 use crate::ports::{RepoPort, StatePort, TgGateway};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -18,6 +20,8 @@ pub struct SyncService {
     repo: Arc<dyn RepoPort>,
     state: Arc<dyn StatePort>,
     media_tx: mpsc::UnboundedSender<MediaReference>,
+    /// Delay between message batch requests to avoid FLOOD_WAIT.
+    delay: Duration,
 }
 
 impl SyncService {
@@ -26,19 +30,27 @@ impl SyncService {
         repo: Arc<dyn RepoPort>,
         state: Arc<dyn StatePort>,
         media_tx: mpsc::UnboundedSender<MediaReference>,
+        delay: Duration,
     ) -> Self {
         Self {
             tg,
             repo,
             state,
             media_tx,
+            delay,
         }
     }
 
     /// Sync a single chat. Fetches all new messages (id > last_message_id) via pagination.
     /// Forward history filling: paginates from newest down to oldest until the API
     /// returns an empty list; processes each batch in ascending id order (oldest -> newest).
-    pub async fn sync_chat(&self, chat_id: i64, limit: i32) -> Result<SyncStats, DomainError> {
+    /// If `include_media` is false, message text is saved but media files are not downloaded.
+    pub async fn sync_chat(
+        &self,
+        chat_id: i64,
+        limit: i32,
+        include_media: bool,
+    ) -> Result<SyncStats, DomainError> {
         let last_known_id = self.state.get_last_message_id(chat_id).await?;
         let min_id = last_known_id;
         let mut max_id = 0i32; // 0 = no upper bound; we set max_id = batch_min to fetch older chunks
@@ -60,20 +72,23 @@ impl SyncService {
             // Process in forward order (oldest -> newest) for consistent history filling
             messages.sort_by_key(|m| m.id);
 
-            // Extract media refs and queue for download (non-blocking)
-            for msg in &messages {
-                if let Some(ref m) = msg.media {
-                    if self.media_tx.send(m.clone()).is_ok() {
-                        total_media_queued += 1;
-                    } else {
-                        warn!(
-                            chat_id,
-                            msg_id = msg.id,
-                            "media channel closed, dropping ref"
-                        );
+            // Extract media refs and queue for download (non-blocking) when enabled
+            if include_media {
+                for msg in &messages {
+                    if let Some(ref m) = msg.media {
+                        if self.media_tx.send(m.clone()).is_ok() {
+                            total_media_queued += 1;
+                        } else {
+                            warn!(
+                                chat_id,
+                                msg_id = msg.id,
+                                "media channel closed, dropping ref"
+                            );
+                        }
                     }
                 }
             }
+            // When include_media is false, messages are saved but media is not queued for download
 
             // Save batch (repo merges and sorts by id)
             self.repo.save_messages(chat_id, &messages).await?;
@@ -94,8 +109,8 @@ impl SyncService {
             // Cursor for next iteration: fetch older messages (id < batch_min)
             max_id = batch_min;
 
-            // Small delay between batches to avoid aggressive rate limits
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            // Rate limit: delay before next batch to avoid FLOOD_WAIT
+            tokio::time::sleep(self.delay).await;
         }
 
         if total_synced > 0 {
@@ -122,9 +137,14 @@ impl SyncService {
         &self,
         chat_ids: &[i64],
         limit_per_chat: i32,
+        include_media: bool,
     ) -> Result<(), DomainError> {
+        if !include_media {
+            info!("Skipping media download due to user preference (text-only mode)");
+        }
         for &chat_id in chat_ids {
-            self.sync_chat(chat_id, limit_per_chat).await?;
+            self.sync_chat(chat_id, limit_per_chat, include_media)
+                .await?;
         }
         Ok(())
     }

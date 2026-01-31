@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tg_sync::adapters::persistence::{sqlite_repo::SqliteRepo, state_json::StateJson};
 use tg_sync::adapters::telegram::{auth_adapter::GrammersAuthAdapter, client::GrammersTgGateway};
 use tg_sync::adapters::tools::chatpack::ChatpackProcessor;
@@ -10,6 +11,7 @@ use tg_sync::adapters::ui::tui::TuiInputPort;
 use tg_sync::ports::{AuthPort, InputPort, RepoPort, StatePort, TgGateway};
 use tg_sync::usecases::{AuthService, MediaWorker, SyncService};
 use tokio::sync::mpsc;
+use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[tokio::main]
@@ -80,12 +82,21 @@ async fn main() -> anyhow::Result<()> {
         media_worker.run().await;
     });
 
+    // --- Sync rate limit (SYNC_DELAY_MS, default 500ms) ---
+    let sync_delay_ms = cfg.sync_delay_ms_or_default();
+    let sync_delay = Duration::from_millis(sync_delay_ms);
+    info!(
+        sync_delay_ms,
+        "sync rate limit: {} ms between batches", sync_delay_ms
+    );
+
     // --- Services ---
     let sync_service = Arc::new(SyncService::new(
         Arc::clone(&tg),
         Arc::clone(&repo),
         Arc::clone(&state),
         media_tx,
+        sync_delay,
     ));
 
     let input_port: Arc<dyn InputPort> = Arc::new(TuiInputPort::new(

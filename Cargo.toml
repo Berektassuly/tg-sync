@@ -1,0 +1,38 @@
+[package]
+name = "tg-archiver"
+version = "0.1.0"
+edition = "2021"
+description = "CLI userbot utility to incrementally backup Telegram chats/groups and media, process with Chatpack"
+authors = ["tg-archiver"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# Runtime
+tokio = { version = "1", features = ["full"] }
+
+# Telegram (MTProto)
+grammers-client = { git = "https://github.com/Lonami/grammers" }
+grammers-session = { git = "https://github.com/Lonami/grammers" }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# UI
+inquire = "0.9"
+indicatif = "0.17"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Config
+config = "0.14"
+dotenv = "0.15"
+
+# Async trait (ports)
+async-trait = "0.1"

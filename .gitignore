@@ -1,0 +1,47 @@
+# Rust / Cargo
+/target/
+**/*.rs.bk
+# For library crates only: Cargo.lock (binaries usually commit it)
+
+# Telegram session & secrets (never commit)
+session.txt
+*.session
+.env
+.env.local
+.env.*.local
+
+# Local data (optional; remove if you want to track sample data)
+/data/
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Debug / Profiling
+*.pdb
+*.profraw
+*.profdata
+coverage/
+*.gcno
+*.gcda
+
+# Logs
+*.log
+logs/
+
+# Build / Misc
+dist/
+*.bak
+*.tmp
+.cache/

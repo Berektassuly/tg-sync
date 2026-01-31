@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use grammers_client::tl;
 use grammers_client::Client;
 use grammers_client::InvocationError;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,6 +22,8 @@ pub struct GrammersTgGateway {
     client: Arc<Mutex<Client>>,
     /// If set, sleep this many ms before each message-history request (rate limiting).
     export_delay_ms: Option<u64>,
+    /// Cache InputPeer by chat_id so we don't call iter_dialogs on every get_messages/download_media (avoids FLOOD_WAIT).
+    peer_cache: Mutex<HashMap<i64, tl::enums::InputPeer>>,
 }
 
 impl GrammersTgGateway {
@@ -30,7 +33,47 @@ impl GrammersTgGateway {
         Self {
             client,
             export_delay_ms,
+            peer_cache: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Resolve chat_id to InputPeer, using cache to avoid repeated iter_dialogs (getDialogs) and FLOOD_WAIT.
+    async fn resolve_input_peer(&self, chat_id: i64) -> Result<tl::enums::InputPeer, DomainError> {
+        {
+            let cache = self.peer_cache.lock().await;
+            if let Some(peer) = cache.get(&chat_id) {
+                return Ok(peer.clone());
+            }
+        }
+        let peer = {
+            let guard = self.client.lock().await;
+            let mut dialogs = guard.iter_dialogs();
+            let mut found = None;
+            while let Some(dialog) = dialogs
+                .next()
+                .await
+                .map_err(|e| DomainError::TgGateway(e.to_string()))?
+            {
+                let p = dialog.peer();
+                if p.id().bot_api_dialog_id() == chat_id {
+                    found = Some(p.clone());
+                    break;
+                }
+            }
+            found.ok_or_else(|| {
+                DomainError::TgGateway(format!("peer {} not found in dialogs", chat_id))
+            })?
+        };
+        let peer_ref = peer
+            .to_ref()
+            .await
+            .ok_or_else(|| DomainError::TgGateway("peer not in session cache".into()))?;
+        let input_peer: tl::enums::InputPeer = peer_ref.into();
+        self.peer_cache
+            .lock()
+            .await
+            .insert(chat_id, input_peer.clone());
+        Ok(input_peer)
     }
 }
 
@@ -75,37 +118,18 @@ impl TgGateway for GrammersTgGateway {
             tokio::time::sleep(Duration::from_millis(ms)).await;
         }
 
-        let peer = {
-            let guard = self.client.lock().await;
-            let mut dialogs = guard.iter_dialogs();
-            let mut found = None;
-            while let Some(dialog) = dialogs
-                .next()
-                .await
-                .map_err(|e| DomainError::TgGateway(e.to_string()))?
-            {
-                let p = dialog.peer();
-                if p.id().bot_api_dialog_id() == chat_id {
-                    found = Some(p.clone());
-                    break;
-                }
-            }
-            found.ok_or_else(|| {
-                DomainError::TgGateway(format!("peer {} not found in dialogs", chat_id))
-            })?
-        };
+        let input_peer = self.resolve_input_peer(chat_id).await?;
 
-        let peer_ref = peer
-            .to_ref()
-            .await
-            .ok_or_else(|| DomainError::TgGateway("peer not in session cache".into()))?;
-        let input_peer: tl::enums::InputPeer = peer_ref.into();
+        // When max_id > 0 we're paginating backward (older messages). Telegram requires
+        // offset_id = max_id so the API returns the next page starting from that message.
+        // With offset_id = 0 we'd get the newest page again and filtering by max_id yields empty.
+        let offset_id = if max_id > 0 { max_id } else { 0 };
 
         for attempt in 0..3 {
             let guard = self.client.lock().await;
             let req = tl::functions::messages::GetHistory {
                 peer: input_peer.clone(),
-                offset_id: 0,
+                offset_id,
                 offset_date: 0,
                 add_offset: 0,
                 limit,

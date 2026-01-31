@@ -1,7 +1,8 @@
 //! Main sync logic: fetch dialogs -> filter -> incremental download -> save.
 //!
-//! - Verifies `last_message_id` from StatePort
-//! - Uses `min_id` to fetch ONLY new messages
+//! - Forward history filling (oldest -> newest): starts from last_message_id (or 0)
+//!   and paginates until the top of the chat (API returns newest-first; we iterate
+//!   by setting max_id = batch_min to fetch older chunks).
 //! - Sends media refs to mpsc channel for async download (non-blocking)
 //! - Updates state only after successful save
 
@@ -35,24 +36,29 @@ impl SyncService {
     }
 
     /// Sync a single chat. Fetches all new messages (id > last_message_id) via pagination.
+    /// Forward history filling: paginates from newest down to oldest until the API
+    /// returns an empty list; processes each batch in ascending id order (oldest -> newest).
     pub async fn sync_chat(&self, chat_id: i64, limit: i32) -> Result<SyncStats, DomainError> {
-        let last_id = self.state.get_last_message_id(chat_id).await?;
-        let min_id = last_id;
-        let mut max_id = 0i32; // 0 = no upper bound; we paginate by setting max_id to min(batch)
+        let last_known_id = self.state.get_last_message_id(chat_id).await?;
+        let min_id = last_known_id;
+        let mut max_id = 0i32; // 0 = no upper bound; we set max_id = batch_min to fetch older chunks
 
         let mut total_synced = 0usize;
         let mut total_media_queued = 0usize;
-        let mut latest_max_id = last_id;
+        let mut current_head_id = last_known_id;
 
         loop {
             let mut messages = self.tg.get_messages(chat_id, min_id, max_id, limit).await?;
 
             // Defensive: only keep messages within our range (API may return boundary)
-            messages.retain(|m| m.id > last_id && (max_id == 0 || m.id < max_id));
+            messages.retain(|m| m.id > last_known_id && (max_id == 0 || m.id < max_id));
 
             if messages.is_empty() {
                 break;
             }
+
+            // Process in forward order (oldest -> newest) for consistent history filling
+            messages.sort_by_key(|m| m.id);
 
             // Extract media refs and queue for download (non-blocking)
             for msg in &messages {
@@ -75,14 +81,18 @@ impl SyncService {
             let batch_max = messages.iter().map(|m| m.id).max().unwrap_or(0);
             let batch_min = messages.iter().map(|m| m.id).min().unwrap_or(0);
             total_synced += messages.len();
-            latest_max_id = latest_max_id.max(batch_max);
+            current_head_id = current_head_id.max(batch_max);
+
+            info!(
+                chat_id,
+                batch_size = messages.len(),
+                new_head_id = batch_max,
+                batch_id_range = %format!("{}..{}", batch_min, batch_max),
+                "fetched batch"
+            );
 
             // Cursor for next iteration: fetch older messages (id < batch_min)
             max_id = batch_min;
-
-            if messages.len() < limit as usize {
-                break;
-            }
 
             // Small delay between batches to avoid aggressive rate limits
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -90,13 +100,13 @@ impl SyncService {
 
         if total_synced > 0 {
             self.state
-                .set_last_message_id(chat_id, latest_max_id)
+                .set_last_message_id(chat_id, current_head_id)
                 .await?;
             info!(
                 chat_id,
                 count = total_synced,
                 media_queued = total_media_queued,
-                last_id = latest_max_id,
+                last_id = current_head_id,
                 "synced messages"
             );
         }

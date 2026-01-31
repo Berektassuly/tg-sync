@@ -1,24 +1,65 @@
 //! Implements InputPort. Inquire-based interactive prompts.
 //!
-//! Skeleton: prompts for chat selection and triggers sync.
+//! Cyberpunk/Neon theme: prompt prefix [?], colored ChatType indicators.
 
 use crate::domain::{ChatType, DomainError};
 use crate::ports::{InputPort, TgGateway};
 use crate::usecases::SyncService;
 use async_trait::async_trait;
-use inquire::{MultiSelect, Text};
+use inquire::ui::{Color, RenderConfig, StyleSheet, Styled};
+use inquire::{set_global_render_config, MultiSelect, Text};
 use std::sync::Arc;
 
-fn chat_type_indicator(kind: ChatType) -> &'static str {
-    match kind {
-        ChatType::Private => "[U]",
-        ChatType::Group => "[G]",
-        ChatType::Supergroup => "[S]",
-        ChatType::Channel => "[C]",
-    }
+/// Neon Purple (#bc13fe) for prompt prefix and accents.
+const NEON_PURPLE: Color = Color::Rgb {
+    r: 0xbc,
+    g: 0x13,
+    b: 0xfe,
+};
+/// Cyber Green (#0ff0fc) for prompts and help.
+const CYBER_GREEN: Color = Color::Rgb {
+    r: 0x0f,
+    g: 0xf0,
+    b: 0xfc,
+};
+/// Yellow for Channel indicator.
+const CHANNEL_YELLOW: (u8, u8, u8) = (255, 255, 0);
+/// Cyan for User (Private) indicator.
+const USER_CYAN: (u8, u8, u8) = (0, 255, 255);
+/// Green for Group/Supergroup.
+const GROUP_GREEN: (u8, u8, u8) = (0, 255, 128);
+
+fn ansi_rgb(r: u8, g: u8, b: u8) -> String {
+    format!("\x1b[38;2;{};{};{}m", r, g, b)
 }
 
-/// TUI adapter. Inquire prompts.
+const RESET: &str = "\x1b[0m";
+
+/// Returns the ChatType indicator with ANSI color: [U] cyan, [G]/[S] green, [C] yellow.
+fn chat_type_indicator(kind: ChatType) -> String {
+    let (tag, r, g, b) = match kind {
+        ChatType::Private => ("[U]", USER_CYAN.0, USER_CYAN.1, USER_CYAN.2),
+        ChatType::Group => ("[G]", GROUP_GREEN.0, GROUP_GREEN.1, GROUP_GREEN.2),
+        ChatType::Supergroup => ("[S]", GROUP_GREEN.0, GROUP_GREEN.1, GROUP_GREEN.2),
+        ChatType::Channel => ("[C]", CHANNEL_YELLOW.0, CHANNEL_YELLOW.1, CHANNEL_YELLOW.2),
+    };
+    format!("{}{}{}", ansi_rgb(r, g, b), tag, RESET)
+}
+
+/// Applies the global Cyberpunk/Neon RenderConfig for inquire prompts.
+pub(crate) fn apply_theme() {
+    let config = RenderConfig::default_colored()
+        .with_prompt_prefix(Styled::new("[?] ").with_fg(NEON_PURPLE))
+        .with_answered_prompt_prefix(Styled::new("tg-archiver> ").with_fg(NEON_PURPLE))
+        .with_help_message(StyleSheet::default().with_fg(CYBER_GREEN))
+        .with_option(StyleSheet::default().with_fg(Color::White))
+        .with_highlighted_option_prefix(Styled::new("❯ ").with_fg(NEON_PURPLE))
+        .with_selected_checkbox(Styled::new("◉").with_fg(CYBER_GREEN))
+        .with_unselected_checkbox(Styled::new("○").with_fg(Color::DarkGrey));
+    set_global_render_config(config);
+}
+
+/// TUI adapter. Inquire prompts with neon theme.
 pub struct TuiInputPort {
     tg: Arc<dyn TgGateway>,
     sync_service: Arc<SyncService>,

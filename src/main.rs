@@ -19,6 +19,8 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    tg_sync::adapters::ui::init_ui();
+
     let cfg = tg_sync::shared::config::AppConfig::load().unwrap_or_default();
     let api_hash = cfg
         .api_hash

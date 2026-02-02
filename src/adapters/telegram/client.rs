@@ -110,12 +110,14 @@ impl TgGateway for GrammersTgGateway {
                 .map(String::from)
                 .unwrap_or_else(|| peer.id().to_string());
             let kind = mapper::chat_type_from_peer(peer);
-            chats.push(Chat {
+            let approx_message_count = dialog.last_message.as_ref().map(|m| m.id());
+            chats.push(mapper::dialog_to_chat(
                 id,
-                title,
-                username: peer.username().map(String::from),
+                &title,
+                peer.username().as_deref(),
                 kind,
-            });
+                approx_message_count,
+            ));
         }
         Ok(chats)
     }

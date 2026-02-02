@@ -12,6 +12,9 @@ pub struct Chat {
     pub username: Option<String>,
     #[serde(rename = "type")]
     pub kind: ChatType,
+    /// Approximate message count heuristic from dialog top/last message ID (no full history fetch).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approx_message_count: Option<i32>,
 }
 
 /// Classification of a Telegram chat.

@@ -26,6 +26,7 @@ pub fn chat_type_from_peer(peer: &Peer) -> ChatType {
 }
 
 /// Map a grammers Dialog/PeerRef to domain Chat (used when building Chat in client).
+/// `top_message_id`: from dialog's last message; used as heuristic for approx_message_count.
 #[allow(dead_code)]
 pub fn dialog_to_chat_from_ref(
     id: i64,
@@ -33,11 +34,23 @@ pub fn dialog_to_chat_from_ref(
     username: Option<&str>,
     kind: ChatType,
 ) -> Chat {
+    dialog_to_chat(id, name, username, kind, None)
+}
+
+/// Build domain Chat with optional approximate message count (from dialog top/last message ID).
+pub fn dialog_to_chat(
+    id: i64,
+    name: &str,
+    username: Option<&str>,
+    kind: ChatType,
+    approx_message_count: Option<i32>,
+) -> Chat {
     Chat {
         id,
         title: name.to_string(),
         username: username.map(String::from),
         kind,
+        approx_message_count,
     }
 }
 

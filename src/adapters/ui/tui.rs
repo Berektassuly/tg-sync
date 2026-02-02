@@ -7,7 +7,7 @@ use crate::ports::{InputPort, RepoPort, TgGateway};
 use crate::usecases::{SyncService, WatcherService};
 use async_trait::async_trait;
 use inquire::ui::{Color, RenderConfig, StyleSheet, Styled};
-use inquire::{set_global_render_config, Confirm, MultiSelect, Select, Text};
+use inquire::{set_global_render_config, Confirm, CustomType, MultiSelect, Select, Text};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -89,6 +89,7 @@ impl InputPort for TuiInputPort {
     async fn run(&self) -> Result<(), DomainError> {
         let options = vec![
             "Full Backup".to_string(),
+            "Manage Blacklist (exclude chats from backup)".to_string(),
             "Watcher / Daemon".to_string(),
             "AI Analysis".to_string(),
         ];
@@ -98,6 +99,7 @@ impl InputPort for TuiInputPort {
 
         match choice.as_str() {
             "Full Backup" => self.run_sync().await,
+            "Manage Blacklist (exclude chats from backup)" => self.run_manage_blacklist().await,
             "Watcher / Daemon" => self.run_watcher().await,
             "AI Analysis" => {
                 println!("Coming soon");
@@ -108,7 +110,7 @@ impl InputPort for TuiInputPort {
     }
 
     async fn run_sync(&self) -> Result<(), DomainError> {
-        // Full Backup flow: dialogs -> blacklist selection -> filter -> sync
+        // Full Backup flow: dialogs -> filter by stored blacklist -> sync (no blacklist UI here).
         let chats = self.tg.get_dialogs().await?;
         if chats.is_empty() {
             println!("No dialogs found.");
@@ -116,46 +118,17 @@ impl InputPort for TuiInputPort {
         }
 
         let blacklisted_ids = self.repo.get_blacklisted_ids().await?;
-        let options: Vec<String> = chats
-            .iter()
-            .map(|c| format!("{} {} ({})", chat_type_indicator(c.kind), c.title, c.id))
-            .collect();
-        let default: Vec<usize> = chats
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| blacklisted_ids.contains(&c.id))
-            .map(|(i, _)| i)
-            .collect();
-
-        let selected = MultiSelect::new("Select chats to EXCLUDE (Blacklist)", options.clone())
-            .with_default(&default)
-            .prompt()
-            .map_err(|e| DomainError::Auth(e.to_string()))?;
-
-        let new_blacklist: HashSet<i64> = chats
-            .iter()
-            .filter(|c| {
-                selected.contains(&format!(
-                    "{} {} ({})",
-                    chat_type_indicator(c.kind),
-                    c.title,
-                    c.id
-                ))
-            })
-            .map(|c| c.id)
-            .collect();
-
-        self.repo.update_blacklist(new_blacklist.clone()).await?;
-
         let allowed: Vec<Chat> = chats
             .iter()
-            .filter(|c| !new_blacklist.contains(&c.id))
+            .filter(|c| !blacklisted_ids.contains(&c.id))
             .cloned()
             .collect();
         let allowed_ids: Vec<i64> = allowed.iter().map(|c| c.id).collect();
 
         if allowed_ids.is_empty() {
-            println!("No chats selected for backup (all excluded).");
+            println!(
+                "No chats to backup (all excluded by blacklist). Use \"Manage Blacklist\" to change."
+            );
             return Ok(());
         }
 
@@ -179,6 +152,83 @@ impl InputPort for TuiInputPort {
 }
 
 impl TuiInputPort {
+    /// Manage Blacklist flow: dialogs -> threshold (optional) -> MultiSelect -> save blacklist.
+    async fn run_manage_blacklist(&self) -> Result<(), DomainError> {
+        let chats = self.tg.get_dialogs().await?;
+        if chats.is_empty() {
+            println!("No dialogs found.");
+            return Ok(());
+        }
+
+        let blacklisted_ids = self.repo.get_blacklisted_ids().await?;
+
+        let threshold: i32 = CustomType::<i32>::new(
+            "Do you want to auto-exclude large chats? Enter threshold (or 0 to skip):",
+        )
+        .with_help_message(
+            "Chats with approx. message count above this will be pre-selected for exclusion. 0 = skip.",
+        )
+        .with_default(0)
+        .with_parser(&|s: &str| s.trim().parse::<i32>().map_err(|_| ()))
+        .prompt()
+        .map_err(|e| DomainError::Auth(e.to_string()))?;
+
+        let large_chat_ids: HashSet<i64> = if threshold > 0 {
+            chats
+                .iter()
+                .filter(|c| c.approx_message_count.map_or(false, |n| n > threshold))
+                .map(|c| c.id)
+                .collect()
+        } else {
+            HashSet::new()
+        };
+
+        let initial_blacklist: HashSet<i64> =
+            blacklisted_ids.union(&large_chat_ids).copied().collect();
+
+        let options: Vec<String> = chats
+            .iter()
+            .map(|c| format!("{} {} ({})", chat_type_indicator(c.kind), c.title, c.id))
+            .collect();
+        let default: Vec<usize> = chats
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| initial_blacklist.contains(&c.id))
+            .map(|(i, _)| i)
+            .collect();
+
+        let selected = MultiSelect::new(
+            "Select chats to EXCLUDE from backup (Blacklist)",
+            options.clone(),
+        )
+        .with_default(&default)
+        .with_help_message(
+            "Checked = excluded from backup. Union of saved blacklist + auto large chats.",
+        )
+        .prompt()
+        .map_err(|e| DomainError::Auth(e.to_string()))?;
+
+        let new_blacklist: HashSet<i64> = chats
+            .iter()
+            .filter(|c| {
+                selected.contains(&format!(
+                    "{} {} ({})",
+                    chat_type_indicator(c.kind),
+                    c.title,
+                    c.id
+                ))
+            })
+            .map(|c| c.id)
+            .collect();
+
+        self.repo.update_blacklist(new_blacklist.clone()).await?;
+        println!(
+            "Blacklist updated ({} chats excluded from backup).",
+            new_blacklist.len()
+        );
+        Ok(())
+    }
+
     /// Watcher flow: dialogs -> target list (whitelist) MultiSelect -> update_targets -> run watcher loop.
     async fn run_watcher(&self) -> Result<(), DomainError> {
         let chats = self.tg.get_dialogs().await?;

@@ -9,9 +9,13 @@ use tg_sync::adapters::telegram::{auth_adapter::GrammersAuthAdapter, client::Gra
 use tg_sync::adapters::tools::chatpack::ChatpackProcessor;
 use tg_sync::adapters::ui::tui::TuiInputPort;
 use tg_sync::ports::{AuthPort, InputPort, RepoPort, StatePort, TgGateway};
+use tg_sync::shared::config::DEFAULT_MEDIA_QUEUE_SIZE;
 use tg_sync::usecases::{AuthService, MediaWorker, SyncService};
 use tokio::sync::mpsc;
 use tracing::info;
+
+/// Bounded channel capacity for media refs. Producer (sync) blocks on send().await when full (backpressure).
+const CHANNEL_CAPACITY: usize = DEFAULT_MEDIA_QUEUE_SIZE;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[tokio::main]
@@ -74,8 +78,8 @@ async fn main() -> anyhow::Result<()> {
 
     let _processor = Arc::new(ChatpackProcessor::new(None::<&str>));
 
-    // --- Media pipeline (bounded channel for backpressure) ---
-    let media_queue_size = cfg.media_queue_size_or_default();
+    // --- Media pipeline: bounded channel for backpressure (producer blocks when full) ---
+    let media_queue_size = cfg.media_queue_size.unwrap_or(CHANNEL_CAPACITY);
     info!(
         media_queue_size,
         "media queue buffer: {} (backpressure)", media_queue_size

@@ -2,6 +2,10 @@
 
 use serde::Deserialize;
 
+/// Default capacity for the media refs channel. Bounded channel provides backpressure:
+/// when full, the sync producer blocks on send().await until the media worker consumes.
+pub const DEFAULT_MEDIA_QUEUE_SIZE: usize = 1000;
+
 #[derive(Debug, Deserialize, Default)]
 pub struct AppConfig {
     pub api_id: Option<i32>,
@@ -56,8 +60,8 @@ impl AppConfig {
         self.sync_delay_ms.unwrap_or(500)
     }
 
-    /// Returns media queue buffer size. Defaults to 1000 if unset or invalid.
+    /// Returns media queue buffer size. Defaults to DEFAULT_MEDIA_QUEUE_SIZE if unset or invalid.
     pub fn media_queue_size_or_default(&self) -> usize {
-        self.media_queue_size.unwrap_or(1000)
+        self.media_queue_size.unwrap_or(DEFAULT_MEDIA_QUEUE_SIZE)
     }
 }

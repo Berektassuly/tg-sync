@@ -76,13 +76,16 @@ impl SyncService {
             // Process in forward order (oldest -> newest) for consistent history filling
             messages.sort_by_key(|m| m.id);
 
-            // Extract media refs and queue for download; send().await blocks when buffer is full (backpressure)
+            // Queue media refs for download. BACKPRESSURE: send().await yields here when the
+            // channel is full; the producer (sync) is thus rate-limited by the consumer (media
+            // worker / disk), preventing unbounded buffer growth and OOM.
             if include_media {
                 for msg in &messages {
                     if let Some(ref m) = msg.media {
                         match self.media_tx.send(m.clone()).await {
                             Ok(()) => total_media_queued += 1,
                             Err(_) => {
+                                // Receiver dropped (e.g. media worker exited); exit loop cleanly.
                                 warn!(
                                     chat_id,
                                     msg_id = msg.id,

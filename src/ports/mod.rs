@@ -7,4 +7,7 @@ pub mod inbound;
 pub mod outbound;
 
 pub use inbound::InputPort;
-pub use outbound::{AuthPort, EntityRegistry, ProcessorPort, RepoPort, StatePort, TgGateway};
+pub use outbound::{
+    AiPort, AnalysisLogPort, AuthPort, EntityRegistry, ProcessorPort, RepoPort, StatePort,
+    TgGateway,
+};

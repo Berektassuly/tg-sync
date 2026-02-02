@@ -73,3 +73,54 @@ pub enum MediaType {
     Animation,
     Other,
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI Analysis Entities
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Weekly grouping key for analysis (e.g., "2024-05").
+/// Format: "YYYY-WW" where WW is ISO week number.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct WeekGroup(pub String);
+
+impl WeekGroup {
+    /// Create from SQLite strftime output: "YYYY-WW"
+    pub fn new(year_week: impl Into<String>) -> Self {
+        Self(year_week.into())
+    }
+
+    /// Get the inner string value.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for WeekGroup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Single action item extracted from chat analysis.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionItem {
+    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deadline: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<String>,
+}
+
+/// Result of LLM analysis for a week's chat data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnalysisResult {
+    pub week_group: WeekGroup,
+    pub chat_id: i64,
+    pub summary: String,
+    pub key_topics: Vec<String>,
+    pub action_items: Vec<ActionItem>,
+    /// Unix timestamp when analysis was performed.
+    pub analyzed_at: i64,
+}

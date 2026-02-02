@@ -5,5 +5,8 @@
 pub mod entities;
 pub mod errors;
 
-pub use entities::{Chat, ChatType, MediaReference, MediaType, Message, SignInResult};
+pub use entities::{
+    ActionItem, AnalysisResult, Chat, ChatType, MediaReference, MediaType, Message, SignInResult,
+    WeekGroup,
+};
 pub use errors::DomainError;

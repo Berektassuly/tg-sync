@@ -119,3 +119,70 @@ pub trait EntityRegistry: Send + Sync {
         username: Option<&str>,
     ) -> Result<(), DomainError>;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI Analysis Ports
+// ─────────────────────────────────────────────────────────────────────────────
+
+use crate::domain::{AnalysisResult, WeekGroup};
+
+/// AI Analysis port. Send context to LLM, receive structured analysis.
+///
+/// Implementations may use OpenAI, Ollama, Anthropic, or any compatible API.
+/// The adapter handles prompt construction and response parsing.
+#[async_trait::async_trait]
+pub trait AiPort: Send + Sync {
+    /// Analyze chat context (CSV format). Returns structured analysis result.
+    ///
+    /// # Arguments
+    /// * `chat_id` - The chat being analyzed (for result metadata)
+    /// * `week_group` - The week being analyzed (e.g., "2024-05")
+    /// * `context_csv` - CSV-formatted chat log: "Date;User;Message"
+    ///
+    /// # Errors
+    /// Returns `DomainError::Ai` if the LLM API fails or returns invalid JSON.
+    async fn analyze(
+        &self,
+        chat_id: i64,
+        week_group: &WeekGroup,
+        context_csv: &str,
+    ) -> Result<AnalysisResult, DomainError>;
+}
+
+/// Analysis log persistence. Track which weeks have been analyzed.
+///
+/// Implemented by `SqliteRepo` to persist analysis state and results.
+#[async_trait::async_trait]
+pub trait AnalysisLogPort: Send + Sync {
+    /// Get all week groups for a chat that have NOT been analyzed yet.
+    ///
+    /// Returns weeks in chronological order (oldest first).
+    async fn get_unanalyzed_weeks(&self, chat_id: i64) -> Result<Vec<WeekGroup>, DomainError>;
+
+    /// Get messages grouped by week for CSV export.
+    ///
+    /// Filters out:
+    /// - Empty messages
+    /// - Service messages (joins/leaves)
+    /// - Stickers without captions
+    ///
+    /// Returns: Vec<(WeekGroup, Vec<Message>)> sorted chronologically.
+    async fn get_messages_by_week(
+        &self,
+        chat_id: i64,
+    ) -> Result<Vec<(WeekGroup, Vec<Message>)>, DomainError>;
+
+    /// Save analysis result after LLM processing.
+    ///
+    /// Uses UPSERT semantics: if the week was already analyzed, the result is replaced.
+    async fn save_analysis(&self, result: &AnalysisResult) -> Result<(), DomainError>;
+
+    /// Get previously saved analysis for a chat+week.
+    ///
+    /// Returns `None` if the week has not been analyzed.
+    async fn get_analysis(
+        &self,
+        chat_id: i64,
+        week_group: &WeekGroup,
+    ) -> Result<Option<AnalysisResult>, DomainError>;
+}

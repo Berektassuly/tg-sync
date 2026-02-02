@@ -28,4 +28,7 @@ pub enum DomainError {
     /// Per Audit §4.1: long waits (≥60s) should not block the worker thread.
     #[error("FloodWait: retry after {seconds} seconds")]
     FloodWait { seconds: u64 },
+
+    #[error("AI analysis failed: {0}")]
+    Ai(String),
 }

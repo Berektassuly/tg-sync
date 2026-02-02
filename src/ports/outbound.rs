@@ -31,6 +31,12 @@ pub trait TgGateway: Send + Sync {
         media_ref: &MediaReference,
         dest_path: &std::path::Path,
     ) -> Result<(), DomainError>;
+
+    /// Get the current user's ID (for Saved Messages / "me"). Used by Watcher for notifications.
+    async fn get_me_id(&self) -> Result<i64, DomainError>;
+
+    /// Send a text message to a chat (e.g. Saved Messages for alerts). `chat_id` is the dialog id (e.g. own user id for Saved Messages).
+    async fn send_message(&self, chat_id: i64, text: &str) -> Result<(), DomainError>;
 }
 
 /// Repository port. Persist and load chat messages.
@@ -52,6 +58,12 @@ pub trait RepoPort: Send + Sync {
 
     /// Sync the blacklist with the given set. Replaces the stored blacklist with `ids`.
     async fn update_blacklist(&self, ids: HashSet<i64>) -> Result<(), DomainError>;
+
+    /// Get the set of chat IDs that are watched (target whitelist for Watcher mode).
+    async fn get_target_ids(&self) -> Result<HashSet<i64>, DomainError>;
+
+    /// Sync the target list with the given set. Replaces the stored targets with `ids`.
+    async fn update_targets(&self, ids: HashSet<i64>) -> Result<(), DomainError>;
 }
 
 /// State port. Track last synced message ID per chat for incremental sync.

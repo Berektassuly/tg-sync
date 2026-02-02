@@ -42,6 +42,12 @@ CREATE TABLE IF NOT EXISTS blacklist (
     chat_id INTEGER PRIMARY KEY
 )"#;
 
+/// Targets (whitelist): chat IDs to watch in Watcher mode. One row per chat_id.
+const TARGETS_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS targets (
+    chat_id INTEGER PRIMARY KEY
+)"#;
+
 /// SQLite repository. One database file (messages.db) in the given base directory.
 /// Chat IDs are stored as a column; all chats share the same file.
 pub struct SqliteRepo {
@@ -102,6 +108,10 @@ impl SqliteRepo {
             .map_err(|e| DomainError::Repo(e.to_string()))?;
 
         conn.execute(BLACKLIST_TABLE, ())
+            .await
+            .map_err(|e| DomainError::Repo(e.to_string()))?;
+
+        conn.execute(TARGETS_TABLE, ())
             .await
             .map_err(|e| DomainError::Repo(e.to_string()))?;
 
@@ -253,6 +263,53 @@ impl RepoPort for SqliteRepo {
         for chat_id in ids {
             tx.execute(
                 "INSERT INTO blacklist (chat_id) VALUES (?1)",
+                params![chat_id],
+            )
+            .await
+            .map_err(|e| DomainError::Repo(e.to_string()))?;
+        }
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Repo(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn get_target_ids(&self) -> Result<HashSet<i64>, DomainError> {
+        let conn = self
+            .db
+            .connect()
+            .map_err(|e| DomainError::Repo(e.to_string()))?;
+        let mut rows = conn
+            .query("SELECT chat_id FROM targets", ())
+            .await
+            .map_err(|e| DomainError::Repo(e.to_string()))?;
+        let mut ids = HashSet::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DomainError::Repo(e.to_string()))?
+        {
+            let chat_id: i64 = row.get(0).map_err(|e| DomainError::Repo(e.to_string()))?;
+            ids.insert(chat_id);
+        }
+        Ok(ids)
+    }
+
+    async fn update_targets(&self, ids: HashSet<i64>) -> Result<(), DomainError> {
+        let conn = self
+            .db
+            .connect()
+            .map_err(|e| DomainError::Repo(e.to_string()))?;
+        let tx = conn
+            .transaction()
+            .await
+            .map_err(|e| DomainError::Repo(e.to_string()))?;
+        tx.execute("DELETE FROM targets", ())
+            .await
+            .map_err(|e| DomainError::Repo(e.to_string()))?;
+        for chat_id in ids {
+            tx.execute(
+                "INSERT INTO targets (chat_id) VALUES (?1)",
                 params![chat_id],
             )
             .await

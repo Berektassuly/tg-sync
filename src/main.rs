@@ -10,7 +10,7 @@ use tg_sync::adapters::tools::chatpack::ChatpackProcessor;
 use tg_sync::adapters::ui::tui::TuiInputPort;
 use tg_sync::ports::{AuthPort, InputPort, RepoPort, StatePort, TgGateway};
 use tg_sync::shared::config::DEFAULT_MEDIA_QUEUE_SIZE;
-use tg_sync::usecases::{AuthService, MediaWorker, SyncService};
+use tg_sync::usecases::{AuthService, MediaWorker, SyncService, WatcherService};
 use tokio::sync::mpsc;
 use tracing::info;
 
@@ -117,10 +117,19 @@ async fn main() -> anyhow::Result<()> {
         sync_delay,
     ));
 
+    let watcher_cycle_secs = cfg.watcher_cycle_secs_or_default();
+    let watcher_service = Arc::new(WatcherService::new(
+        Arc::clone(&tg),
+        Arc::clone(&repo),
+        Arc::clone(&sync_service),
+        Duration::from_secs(watcher_cycle_secs),
+    ));
+
     let input_port: Arc<dyn InputPort> = Arc::new(TuiInputPort::new(
         Arc::clone(&tg),
         Arc::clone(&repo),
         Arc::clone(&sync_service),
+        Arc::clone(&watcher_service),
     ));
 
     // --- Run (main menu -> Full Backup / Watcher / AI Analysis) ---

@@ -180,4 +180,13 @@ impl RepoPort for FsRepo {
     async fn update_blacklist(&self, _ids: HashSet<i64>) -> Result<(), DomainError> {
         Ok(())
     }
+
+    async fn get_target_ids(&self) -> Result<HashSet<i64>, DomainError> {
+        Ok(HashSet::new())
+    }
+
+    /// FsRepo has no target persistence; no-op.
+    async fn update_targets(&self, _ids: HashSet<i64>) -> Result<(), DomainError> {
+        Ok(())
+    }
 }

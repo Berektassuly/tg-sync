@@ -4,7 +4,7 @@
 
 use crate::domain::{Chat, ChatType, DomainError};
 use crate::ports::{InputPort, RepoPort, TgGateway};
-use crate::usecases::SyncService;
+use crate::usecases::{SyncService, WatcherService};
 use async_trait::async_trait;
 use inquire::ui::{Color, RenderConfig, StyleSheet, Styled};
 use inquire::{set_global_render_config, Confirm, MultiSelect, Select, Text};
@@ -65,6 +65,7 @@ pub struct TuiInputPort {
     tg: Arc<dyn TgGateway>,
     repo: Arc<dyn RepoPort>,
     sync_service: Arc<SyncService>,
+    watcher_service: Arc<WatcherService>,
 }
 
 impl TuiInputPort {
@@ -72,11 +73,13 @@ impl TuiInputPort {
         tg: Arc<dyn TgGateway>,
         repo: Arc<dyn RepoPort>,
         sync_service: Arc<SyncService>,
+        watcher_service: Arc<WatcherService>,
     ) -> Self {
         Self {
             tg,
             repo,
             sync_service,
+            watcher_service,
         }
     }
 }
@@ -95,7 +98,8 @@ impl InputPort for TuiInputPort {
 
         match choice.as_str() {
             "Full Backup" => self.run_sync().await,
-            "Watcher / Daemon" | "AI Analysis" => {
+            "Watcher / Daemon" => self.run_watcher().await,
+            "AI Analysis" => {
                 println!("Coming soon");
                 Ok(())
             }
@@ -116,7 +120,6 @@ impl InputPort for TuiInputPort {
             .iter()
             .map(|c| format!("{} {} ({})", chat_type_indicator(c.kind), c.title, c.id))
             .collect();
-        // Pre-select options that are already in the blacklist (indices where chat.id is in blacklisted_ids)
         let default: Vec<usize> = chats
             .iter()
             .enumerate()
@@ -129,7 +132,6 @@ impl InputPort for TuiInputPort {
             .prompt()
             .map_err(|e| DomainError::Auth(e.to_string()))?;
 
-        // Selected options = new blacklist set
         let new_blacklist: HashSet<i64> = chats
             .iter()
             .filter(|c| {
@@ -145,7 +147,6 @@ impl InputPort for TuiInputPort {
 
         self.repo.update_blacklist(new_blacklist.clone()).await?;
 
-        // Allowed chats = dialogs not in the new blacklist
         let allowed: Vec<Chat> = chats
             .iter()
             .filter(|c| !new_blacklist.contains(&c.id))
@@ -174,5 +175,51 @@ impl InputPort for TuiInputPort {
             .prompt()
             .map_err(|e| DomainError::Auth(e.to_string()))?;
         Ok(())
+    }
+}
+
+impl TuiInputPort {
+    /// Watcher flow: dialogs -> target list (whitelist) MultiSelect -> update_targets -> run watcher loop.
+    async fn run_watcher(&self) -> Result<(), DomainError> {
+        let chats = self.tg.get_dialogs().await?;
+        if chats.is_empty() {
+            println!("No dialogs found.");
+            return Ok(());
+        }
+
+        let target_ids = self.repo.get_target_ids().await?;
+        let options: Vec<String> = chats
+            .iter()
+            .map(|c| format!("{} {} ({})", chat_type_indicator(c.kind), c.title, c.id))
+            .collect();
+        let default: Vec<usize> = chats
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| target_ids.contains(&c.id))
+            .map(|(i, _)| i)
+            .collect();
+
+        let selected = MultiSelect::new("Select chats to WATCH (Target List)", options.clone())
+            .with_default(&default)
+            .prompt()
+            .map_err(|e| DomainError::Auth(e.to_string()))?;
+
+        let new_targets: HashSet<i64> = chats
+            .iter()
+            .filter(|c| {
+                selected.contains(&format!(
+                    "{} {} ({})",
+                    chat_type_indicator(c.kind),
+                    c.title,
+                    c.id
+                ))
+            })
+            .map(|c| c.id)
+            .collect();
+
+        self.repo.update_targets(new_targets.clone()).await?;
+
+        println!("Watcher started. Notifications will go to Saved Messages. Press Ctrl+C to stop.");
+        self.watcher_service.run_loop().await
     }
 }

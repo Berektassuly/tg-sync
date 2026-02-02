@@ -248,4 +248,30 @@ impl TgGateway for GrammersTgGateway {
         );
         Ok(())
     }
+
+    async fn get_me_id(&self) -> Result<i64, DomainError> {
+        let me = self
+            .client
+            .get_me()
+            .await
+            .map_err(|e| DomainError::TgGateway(e.to_string()))?;
+        Ok(me.id().bot_api_dialog_id())
+    }
+
+    async fn send_message(&self, chat_id: i64, text: &str) -> Result<(), DomainError> {
+        self.resolve_input_peer(chat_id).await?;
+        let peer = self
+            .get_cached_peer(chat_id)
+            .await
+            .ok_or_else(|| DomainError::TgGateway("peer not in cache after resolve".into()))?;
+        let peer_ref = peer
+            .to_ref()
+            .await
+            .ok_or_else(|| DomainError::TgGateway("peer not in session cache".into()))?;
+        self.client
+            .send_message(peer_ref, text)
+            .await
+            .map_err(|e| DomainError::TgGateway(e.to_string()))?;
+        Ok(())
+    }
 }

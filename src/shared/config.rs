@@ -23,6 +23,10 @@ pub struct AppConfig {
     /// Max number of media refs buffered between sync loop and media worker (backpressure). Read from MEDIA_QUEUE_SIZE.
     #[serde(default)]
     pub media_queue_size: Option<usize>,
+
+    /// Watcher cycle sleep in seconds (default 600). Read from TG_SYNC_WATCHER_CYCLE_SECS.
+    #[serde(default)]
+    pub watcher_cycle_secs: Option<u64>,
 }
 
 impl AppConfig {
@@ -52,7 +56,18 @@ impl AppConfig {
                 cfg.media_queue_size = Some(n);
             }
         }
+        // WATCHER_CYCLE_SECS: sleep between watcher cycles (default 600)
+        if let Ok(s) = std::env::var("TG_SYNC_WATCHER_CYCLE_SECS") {
+            if let Ok(n) = s.parse::<u64>() {
+                cfg.watcher_cycle_secs = Some(n);
+            }
+        }
         Ok(cfg)
+    }
+
+    /// Returns watcher cycle sleep in seconds. Defaults to 600 if unset or invalid.
+    pub fn watcher_cycle_secs_or_default(&self) -> u64 {
+        self.watcher_cycle_secs.unwrap_or(600)
     }
 
     /// Returns sync delay in milliseconds. Defaults to 500 if unset or invalid.

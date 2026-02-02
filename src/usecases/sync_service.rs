@@ -95,15 +95,19 @@ impl SyncService {
 
             let batch_max = messages.iter().map(|m| m.id).max().unwrap_or(0);
             let batch_min = messages.iter().map(|m| m.id).min().unwrap_or(0);
+
+            // Persist checkpoint immediately so interrupted syncs can resume from this batch
+            self.state.set_last_message_id(chat_id, batch_max).await?;
+
             total_synced += messages.len();
             current_head_id = current_head_id.max(batch_max);
 
             info!(
                 chat_id,
                 batch_size = messages.len(),
-                new_head_id = batch_max,
                 batch_id_range = %format!("{}..{}", batch_min, batch_max),
-                "fetched batch"
+                checkpoint = batch_max,
+                "batch saved, checkpoint advanced"
             );
 
             // Cursor for next iteration: fetch older messages (id < batch_min)
@@ -114,15 +118,12 @@ impl SyncService {
         }
 
         if total_synced > 0 {
-            self.state
-                .set_last_message_id(chat_id, current_head_id)
-                .await?;
             info!(
                 chat_id,
                 count = total_synced,
                 media_queued = total_media_queued,
                 last_id = current_head_id,
-                "synced messages"
+                "sync completed"
             );
         }
 

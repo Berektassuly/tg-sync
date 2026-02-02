@@ -1,0 +1,324 @@
+//! OpenAI-compatible adapter for AI analysis.
+//!
+//! Supports OpenAI API, Azure OpenAI, and local Ollama instances.
+//! Implements `AiPort` with robust JSON parsing and markdown stripping.
+
+use crate::domain::{ActionItem, AnalysisResult, DomainError, WeekGroup};
+use crate::ports::AiPort;
+use serde::{Deserialize, Serialize};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::{debug, info, warn};
+
+/// OpenAI-compatible AI adapter.
+///
+/// Can be configured to work with:
+/// - OpenAI API (api.openai.com)
+/// - Azure OpenAI
+/// - Ollama (localhost)
+/// - Any OpenAI-compatible API
+pub struct OpenAiAdapter {
+    client: reqwest::Client,
+    api_url: String,
+    api_key: String,
+    model: String,
+}
+
+impl OpenAiAdapter {
+    /// Create a new OpenAI adapter.
+    ///
+    /// # Arguments
+    /// * `api_url` - API endpoint (e.g., "https://api.openai.com/v1/chat/completions")
+    /// * `api_key` - API key (can be empty for local Ollama)
+    /// * `model` - Model name (e.g., "gpt-4o-mini", "llama3.2")
+    pub fn new(api_url: String, api_key: String, model: String) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            api_url,
+            api_key,
+            model,
+        }
+    }
+
+    /// Build the system prompt with JSON schema instructions.
+    fn system_prompt() -> &'static str {
+        r#"You are an expert personal assistant analyzing Telegram chat logs.
+
+## Your Task
+1. Summarize the key discussions and themes (2-3 concise paragraphs).
+2. Extract Action Items with owner and deadline if mentioned.
+3. List 3-5 key topics discussed.
+
+## Output Format
+You MUST respond with valid JSON only. No markdown, no explanations outside JSON.
+
+```json
+{
+  "summary": "Concise summary of discussions...",
+  "key_topics": ["topic1", "topic2", "topic3"],
+  "action_items": [
+    {
+      "description": "What needs to be done",
+      "owner": "Person responsible (or null)",
+      "deadline": "Due date if mentioned (or null)",
+      "priority": "high|medium|low (or null)"
+    }
+  ]
+}
+```
+
+If there are no action items, return an empty array for action_items.
+Keep summaries factual and concise. Focus on actionable information."#
+    }
+
+    /// Build the user prompt with CSV data.
+    fn user_prompt(context_csv: &str) -> String {
+        format!(
+            "Analyze the following chat log for the week. The format is CSV with columns: Date, User ID, Message.\n\n{}",
+            context_csv
+        )
+    }
+
+    /// Sanitize JSON response from LLM.
+    ///
+    /// LLMs sometimes wrap JSON in markdown code blocks. This strips them.
+    fn sanitize_json(raw_text: &str) -> String {
+        let trimmed = raw_text.trim();
+
+        // Handle markdown code blocks: ```json ... ``` or ``` ... ```
+        if trimmed.starts_with("```") {
+            let without_prefix = if trimmed.starts_with("```json") {
+                trimmed.strip_prefix("```json").unwrap_or(trimmed)
+            } else {
+                trimmed.strip_prefix("```").unwrap_or(trimmed)
+            };
+
+            // Find closing backticks
+            if let Some(end_idx) = without_prefix.rfind("```") {
+                return without_prefix[..end_idx].trim().to_string();
+            }
+            return without_prefix.trim().to_string();
+        }
+
+        // Handle cases where JSON might be wrapped in other markdown
+        if let Some(start) = trimmed.find('{') {
+            if let Some(end) = trimmed.rfind('}') {
+                if start < end {
+                    return trimmed[start..=end].to_string();
+                }
+            }
+        }
+
+        trimmed.to_string()
+    }
+}
+
+/// OpenAI API request structure.
+#[derive(Serialize)]
+struct ChatRequest {
+    model: String,
+    messages: Vec<ChatMessage>,
+    temperature: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<ResponseFormat>,
+}
+
+#[derive(Serialize)]
+struct ChatMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Serialize)]
+struct ResponseFormat {
+    #[serde(rename = "type")]
+    format_type: String,
+}
+
+/// OpenAI API response structure.
+#[derive(Deserialize)]
+struct ChatResponse {
+    choices: Vec<Choice>,
+}
+
+#[derive(Deserialize)]
+struct Choice {
+    message: MessageContent,
+}
+
+#[derive(Deserialize)]
+struct MessageContent {
+    content: String,
+}
+
+/// Parsed LLM response (matches our JSON schema).
+#[derive(Deserialize)]
+struct LlmAnalysis {
+    summary: String,
+    key_topics: Vec<String>,
+    action_items: Vec<LlmActionItem>,
+}
+
+#[derive(Deserialize)]
+struct LlmActionItem {
+    description: String,
+    owner: Option<String>,
+    deadline: Option<String>,
+    priority: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl AiPort for OpenAiAdapter {
+    async fn analyze(
+        &self,
+        chat_id: i64,
+        week_group: &WeekGroup,
+        context_csv: &str,
+    ) -> Result<AnalysisResult, DomainError> {
+        info!(
+            chat_id,
+            week = %week_group,
+            csv_len = context_csv.len(),
+            "sending context to AI for analysis"
+        );
+
+        // Build request
+        let request = ChatRequest {
+            model: self.model.clone(),
+            messages: vec![
+                ChatMessage {
+                    role: "system".to_string(),
+                    content: Self::system_prompt().to_string(),
+                },
+                ChatMessage {
+                    role: "user".to_string(),
+                    content: Self::user_prompt(context_csv),
+                },
+            ],
+            temperature: 0.3,
+            response_format: Some(ResponseFormat {
+                format_type: "json_object".to_string(),
+            }),
+        };
+
+        // Send request
+        let response = self
+            .client
+            .post(&self.api_url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| DomainError::Ai(format!("HTTP request failed: {}", e)))?;
+
+        // Check status
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            warn!(status = %status, body = %text, "AI API returned error");
+            return Err(DomainError::Ai(format!(
+                "API error {}: {}",
+                status,
+                text.chars().take(200).collect::<String>()
+            )));
+        }
+
+        // Parse response
+        let chat_response: ChatResponse = response
+            .json()
+            .await
+            .map_err(|e| DomainError::Ai(format!("Failed to parse API response: {}", e)))?;
+
+        let raw_content = chat_response
+            .choices
+            .first()
+            .map(|c| c.message.content.clone())
+            .ok_or_else(|| DomainError::Ai("No response choices returned".to_string()))?;
+
+        debug!(raw_len = raw_content.len(), "received AI response");
+
+        // Sanitize and parse JSON
+        let clean_json = Self::sanitize_json(&raw_content);
+        let analysis: LlmAnalysis = serde_json::from_str(&clean_json).map_err(|e| {
+            warn!(error = %e, json = %clean_json.chars().take(200).collect::<String>(), "JSON parse failed");
+            DomainError::Ai(format!("Failed to parse LLM JSON: {}", e))
+        })?;
+
+        // Convert to domain entity
+        let analyzed_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let action_items: Vec<ActionItem> = analysis
+            .action_items
+            .into_iter()
+            .map(|item| ActionItem {
+                description: item.description,
+                owner: item.owner,
+                deadline: item.deadline,
+                priority: item.priority,
+            })
+            .collect();
+
+        info!(
+            chat_id,
+            week = %week_group,
+            topics = analysis.key_topics.len(),
+            actions = action_items.len(),
+            "AI analysis complete"
+        );
+
+        Ok(AnalysisResult {
+            week_group: week_group.clone(),
+            chat_id,
+            summary: analysis.summary,
+            key_topics: analysis.key_topics,
+            action_items,
+            analyzed_at,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_json_clean() {
+        let input = r#"{"summary": "test"}"#;
+        assert_eq!(OpenAiAdapter::sanitize_json(input), input);
+    }
+
+    #[test]
+    fn test_sanitize_json_markdown() {
+        let input = r#"```json
+{"summary": "test"}
+```"#;
+        assert_eq!(
+            OpenAiAdapter::sanitize_json(input),
+            r#"{"summary": "test"}"#
+        );
+    }
+
+    #[test]
+    fn test_sanitize_json_markdown_no_lang() {
+        let input = r#"```
+{"summary": "test"}
+```"#;
+        assert_eq!(
+            OpenAiAdapter::sanitize_json(input),
+            r#"{"summary": "test"}"#
+        );
+    }
+
+    #[test]
+    fn test_sanitize_json_with_text() {
+        let input = r#"Here is the analysis:
+{"summary": "test", "key_topics": []}"#;
+        assert_eq!(
+            OpenAiAdapter::sanitize_json(input),
+            r#"{"summary": "test", "key_topics": []}"#
+        );
+    }
+}

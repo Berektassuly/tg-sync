@@ -4,12 +4,14 @@
 
 use crate::domain::{Chat, ChatType, DomainError};
 use crate::ports::{InputPort, RepoPort, TgGateway};
-use crate::usecases::{SyncService, WatcherService};
+use crate::usecases::{AnalysisService, SyncService, WatcherService};
 use async_trait::async_trait;
+use indicatif::{ProgressBar, ProgressStyle};
 use inquire::ui::{Color, RenderConfig, StyleSheet, Styled};
 use inquire::{set_global_render_config, Confirm, CustomType, MultiSelect, Select, Text};
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Neon Purple (#bc13fe) for prompt prefix and accents.
 const NEON_PURPLE: Color = Color::Rgb {
@@ -66,6 +68,7 @@ pub struct TuiInputPort {
     repo: Arc<dyn RepoPort>,
     sync_service: Arc<SyncService>,
     watcher_service: Arc<WatcherService>,
+    analysis_service: Arc<AnalysisService>,
 }
 
 impl TuiInputPort {
@@ -74,12 +77,14 @@ impl TuiInputPort {
         repo: Arc<dyn RepoPort>,
         sync_service: Arc<SyncService>,
         watcher_service: Arc<WatcherService>,
+        analysis_service: Arc<AnalysisService>,
     ) -> Self {
         Self {
             tg,
             repo,
             sync_service,
             watcher_service,
+            analysis_service,
         }
     }
 }
@@ -101,10 +106,7 @@ impl InputPort for TuiInputPort {
             "Full Backup" => self.run_sync().await,
             "Manage Blacklist (exclude chats from backup)" => self.run_manage_blacklist().await,
             "Watcher / Daemon" => self.run_watcher().await,
-            "AI Analysis" => {
-                println!("Coming soon");
-                Ok(())
-            }
+            "AI Analysis" => self.run_ai_analysis().await,
             _ => Ok(()),
         }
     }
@@ -271,5 +273,96 @@ impl TuiInputPort {
 
         println!("Watcher started. Notifications will go to Saved Messages. Press Ctrl+C to stop.");
         self.watcher_service.run_loop().await
+    }
+
+    /// AI Analysis flow: select chats -> analyze unprocessed weeks -> generate reports.
+    async fn run_ai_analysis(&self) -> Result<(), DomainError> {
+        let chats = self.tg.get_dialogs().await?;
+        if chats.is_empty() {
+            println!("No dialogs found.");
+            return Ok(());
+        }
+
+        // Build options list with chat indicators
+        let options: Vec<String> = chats
+            .iter()
+            .map(|c| format!("{} {} ({})", chat_type_indicator(c.kind), c.title, c.id))
+            .collect();
+
+        let selected = MultiSelect::new("Select chats to analyze", options.clone())
+            .with_help_message("Space to select, Enter to confirm")
+            .prompt()
+            .map_err(|e| DomainError::Auth(e.to_string()))?;
+
+        if selected.is_empty() {
+            println!("No chats selected.");
+            return Ok(());
+        }
+
+        // Extract selected chat IDs
+        let selected_chats: Vec<(i64, String)> = chats
+            .iter()
+            .filter(|c| {
+                selected.contains(&format!(
+                    "{} {} ({})",
+                    chat_type_indicator(c.kind),
+                    c.title,
+                    c.id
+                ))
+            })
+            .map(|c| (c.id, c.title.clone()))
+            .collect();
+
+        println!(
+            "\n🤖 Starting AI Analysis for {} chat(s)...\n",
+            selected_chats.len()
+        );
+
+        let mut total_reports = 0usize;
+        let mut failed_chats = Vec::new();
+
+        for (chat_id, chat_title) in &selected_chats {
+            // Create spinner for this chat
+            let spinner = ProgressBar::new_spinner();
+            spinner.set_style(
+                ProgressStyle::default_spinner()
+                    .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+                    .template("{spinner:.cyan} {msg}")
+                    .unwrap(),
+            );
+            spinner.set_message(format!("Analyzing {} (requesting LLM)...", chat_title));
+            spinner.enable_steady_tick(Duration::from_millis(100));
+
+            match self.analysis_service.analyze_chat(*chat_id).await {
+                Ok(reports) => {
+                    spinner.finish_and_clear();
+                    if reports.is_empty() {
+                        println!("⏭️  {} — No new weeks to analyze", chat_title);
+                    } else {
+                        println!("✅ {} — Generated {} report(s):", chat_title, reports.len());
+                        for path in &reports {
+                            println!("   📄 {}", path.display());
+                        }
+                        total_reports += reports.len();
+                    }
+                }
+                Err(e) => {
+                    spinner.finish_and_clear();
+                    println!("❌ {} — Analysis failed: {}", chat_title, e);
+                    failed_chats.push(chat_title.clone());
+                }
+            }
+        }
+
+        println!();
+        if total_reports > 0 {
+            println!("📊 Total reports generated: {}", total_reports);
+        }
+        if !failed_chats.is_empty() {
+            println!("⚠️  Failed chats: {}", failed_chats.join(", "));
+        }
+        println!();
+
+        Ok(())
     }
 }

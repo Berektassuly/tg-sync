@@ -4,15 +4,18 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use tg_sync::adapters::ai::{MockAiAdapter, OpenAiAdapter};
 use tg_sync::adapters::persistence::{sqlite_repo::SqliteRepo, state_json::StateJson};
 use tg_sync::adapters::telegram::{auth_adapter::GrammersAuthAdapter, client::GrammersTgGateway};
 use tg_sync::adapters::tools::chatpack::ChatpackProcessor;
 use tg_sync::adapters::ui::tui::TuiInputPort;
-use tg_sync::ports::{AuthPort, InputPort, RepoPort, StatePort, TgGateway};
+use tg_sync::ports::{
+    AiPort, AnalysisLogPort, AuthPort, InputPort, RepoPort, StatePort, TgGateway,
+};
 use tg_sync::shared::config::DEFAULT_MEDIA_QUEUE_SIZE;
-use tg_sync::usecases::{AuthService, MediaWorker, SyncService, WatcherService};
+use tg_sync::usecases::{AnalysisService, AuthService, MediaWorker, SyncService, WatcherService};
 use tokio::sync::mpsc;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Bounded channel capacity for media refs. Producer (sync) blocks on send().await when full (backpressure).
 const CHANNEL_CAPACITY: usize = DEFAULT_MEDIA_QUEUE_SIZE;
@@ -70,11 +73,14 @@ async fn main() -> anyhow::Result<()> {
 
     // Audit §2.4: Use SqliteRepo for ACID compliance, WAL mode, and EntityRegistry support.
     // FsRepo (JSONL) lacks atomic writes and is vulnerable to data corruption on crash.
-    let repo: Arc<dyn RepoPort> = Arc::new(
+    let sqlite_repo = Arc::new(
         SqliteRepo::connect(&data_path)
             .await
             .map_err(|e| anyhow::anyhow!("SQLite connect failed: {}", e))?,
     );
+    let repo: Arc<dyn RepoPort> = Arc::clone(&sqlite_repo) as Arc<dyn RepoPort>;
+    let analysis_log: Arc<dyn AnalysisLogPort> =
+        Arc::clone(&sqlite_repo) as Arc<dyn AnalysisLogPort>;
     let state_impl = StateJson::new(&state_path);
     state_impl
         .load()
@@ -125,11 +131,32 @@ async fn main() -> anyhow::Result<()> {
         Duration::from_secs(watcher_cycle_secs),
     ));
 
+    // --- AI Analysis Service ---
+    let ai_adapter: Arc<dyn AiPort> = if cfg.is_ai_configured() {
+        info!(
+            model = %cfg.ai_model_or_default(),
+            url = %cfg.ai_api_url_or_default(),
+            "AI analysis enabled with OpenAI adapter"
+        );
+        Arc::new(OpenAiAdapter::new(
+            cfg.ai_api_url_or_default(),
+            cfg.ai_api_key().unwrap_or_default(),
+            cfg.ai_model_or_default(),
+        ))
+    } else {
+        warn!("TG_SYNC_AI_API_KEY not set, using mock AI adapter");
+        Arc::new(MockAiAdapter::new())
+    };
+
+    let reports_dir = data_path.join("reports");
+    let analysis_service = Arc::new(AnalysisService::new(ai_adapter, analysis_log, reports_dir));
+
     let input_port: Arc<dyn InputPort> = Arc::new(TuiInputPort::new(
         Arc::clone(&tg),
         Arc::clone(&repo),
         Arc::clone(&sync_service),
         Arc::clone(&watcher_service),
+        Arc::clone(&analysis_service),
     ));
 
     // --- Run (main menu -> Full Backup / Watcher / AI Analysis) ---

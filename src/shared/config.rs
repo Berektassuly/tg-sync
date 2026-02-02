@@ -27,6 +27,21 @@ pub struct AppConfig {
     /// Watcher cycle sleep in seconds (default 600). Read from TG_SYNC_WATCHER_CYCLE_SECS.
     #[serde(default)]
     pub watcher_cycle_secs: Option<u64>,
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // AI Analysis Configuration
+    // ─────────────────────────────────────────────────────────────────────────
+    /// AI API key (e.g., OpenAI). Read from TG_SYNC_AI_API_KEY.
+    #[serde(default)]
+    pub ai_api_key: Option<String>,
+
+    /// AI API URL. Defaults to OpenAI. Read from TG_SYNC_AI_API_URL.
+    #[serde(default)]
+    pub ai_api_url: Option<String>,
+
+    /// AI model name. Defaults to "gpt-4o-mini". Read from TG_SYNC_AI_MODEL.
+    #[serde(default)]
+    pub ai_model: Option<String>,
 }
 
 impl AppConfig {
@@ -78,5 +93,37 @@ impl AppConfig {
     /// Returns media queue buffer size. Defaults to DEFAULT_MEDIA_QUEUE_SIZE if unset or invalid.
     pub fn media_queue_size_or_default(&self) -> usize {
         self.media_queue_size.unwrap_or(DEFAULT_MEDIA_QUEUE_SIZE)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // AI Configuration Helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Returns the AI API key if configured. Reads from config or TG_SYNC_AI_API_KEY env.
+    pub fn ai_api_key(&self) -> Option<String> {
+        self.ai_api_key
+            .clone()
+            .or_else(|| std::env::var("TG_SYNC_AI_API_KEY").ok())
+    }
+
+    /// Returns the AI API URL. Defaults to OpenAI chat completions endpoint.
+    pub fn ai_api_url_or_default(&self) -> String {
+        self.ai_api_url
+            .clone()
+            .or_else(|| std::env::var("TG_SYNC_AI_API_URL").ok())
+            .unwrap_or_else(|| "https://api.openai.com/v1/chat/completions".to_string())
+    }
+
+    /// Returns the AI model name. Defaults to "gpt-4o-mini".
+    pub fn ai_model_or_default(&self) -> String {
+        self.ai_model
+            .clone()
+            .or_else(|| std::env::var("TG_SYNC_AI_MODEL").ok())
+            .unwrap_or_else(|| "gpt-4o-mini".to_string())
+    }
+
+    /// Returns true if AI is configured (API key present).
+    pub fn is_ai_configured(&self) -> bool {
+        self.ai_api_key().is_some()
     }
 }

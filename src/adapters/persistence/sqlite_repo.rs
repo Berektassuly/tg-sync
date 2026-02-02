@@ -60,13 +60,28 @@ impl SqliteRepo {
         let conn = db.connect().map_err(|e| DomainError::Repo(e.to_string()))?;
 
         // Audit §5.3: WAL mode enables concurrent readers + one writer.
-        conn.execute("PRAGMA journal_mode=WAL", ())
+        // PRAGMA returns a row (new value); use query and consume rows (execute fails when rows are returned).
+        let mut wal_rows = conn
+            .query("PRAGMA journal_mode=WAL", ())
             .await
             .map_err(|e| DomainError::Repo(format!("WAL pragma failed: {}", e)))?;
+        while wal_rows
+            .next()
+            .await
+            .map_err(|e| DomainError::Repo(e.to_string()))?
+            .is_some()
+        {}
         // Audit §5.3: synchronous=NORMAL is safe with WAL and faster than FULL.
-        conn.execute("PRAGMA synchronous=NORMAL", ())
+        let mut sync_rows = conn
+            .query("PRAGMA synchronous=NORMAL", ())
             .await
             .map_err(|e| DomainError::Repo(format!("synchronous pragma failed: {}", e)))?;
+        while sync_rows
+            .next()
+            .await
+            .map_err(|e| DomainError::Repo(e.to_string()))?
+            .is_some()
+        {}
 
         conn.execute(MESSAGES_TABLE, ())
             .await

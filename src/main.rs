@@ -48,14 +48,13 @@ async fn main() -> anyhow::Result<()> {
         .session_path
         .as_deref()
         .map(PathBuf::from)
-        .unwrap_or_else(|| data_path.join("session.db"));
+        .unwrap_or_else(|| PathBuf::from("./session.db"));
 
     // --- Telegram client (cloned for auth and gateway; same session, no global lock) ---
     let tg_client = create_telegram_client(&cfg, &session_path).await?;
 
     // --- Auth: adapter + service, then run flow ---
-    let auth_adapter: Arc<dyn AuthPort> =
-        Arc::new(GrammersAuthAdapter::new(tg_client.clone()));
+    let auth_adapter: Arc<dyn AuthPort> = Arc::new(GrammersAuthAdapter::new(tg_client.clone()));
     let auth_service = AuthService::new(auth_adapter, api_hash);
     auth_service
         .run_auth_flow()
@@ -63,8 +62,7 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // --- Gateway (clone of same client; fetch_messages and download_media can run concurrently) ---
-    let tg: Arc<dyn TgGateway> =
-        Arc::new(GrammersTgGateway::new(tg_client, cfg.export_delay_ms));
+    let tg: Arc<dyn TgGateway> = Arc::new(GrammersTgGateway::new(tg_client, cfg.export_delay_ms));
 
     let repo: Arc<dyn RepoPort> = Arc::new(FsRepo::new(&data_path));
     let state_impl = StateJson::new(&state_path);

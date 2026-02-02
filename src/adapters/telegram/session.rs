@@ -9,7 +9,8 @@ use std::path::Path;
 /// Opens a persistent session storage at the given path.
 ///
 /// Uses SqliteSession (SQLite file) as the backing store. The file is created
-/// if it does not exist. Parent directories are created as needed.
+/// if it does not exist. Parent directories are created as needed. On Unix,
+/// the file is set to mode 0600 (read/write only by owner) for security.
 ///
 /// # Errors
 ///
@@ -18,11 +19,24 @@ use std::path::Path;
 pub async fn open_file_session(path: impl AsRef<Path>) -> anyhow::Result<SqliteSession> {
     let path = path.as_ref();
     if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| anyhow::anyhow!("create session directory: {}", e))?;
+        if !parent.as_os_str().is_empty() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| anyhow::anyhow!("create session directory: {}", e))?;
+        }
     }
-    SqliteSession::open(path)
+    let session = SqliteSession::open(path)
         .await
-        .map_err(|e| anyhow::anyhow!("open session file: {}", e))
+        .map_err(|e| anyhow::anyhow!("open session file: {}", e))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if path.exists() {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| anyhow::anyhow!("set session file permissions: {}", e))?;
+        }
+    }
+
+    Ok(session)
 }

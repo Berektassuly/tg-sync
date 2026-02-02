@@ -6,6 +6,7 @@
 # Telegram session & secrets (never commit)
 session.txt
 *.session
+*.db
 .env
 .env.local
 .env.*.local

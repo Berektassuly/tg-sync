@@ -119,12 +119,13 @@ async fn main() -> anyhow::Result<()> {
 
     let input_port: Arc<dyn InputPort> = Arc::new(TuiInputPort::new(
         Arc::clone(&tg),
+        Arc::clone(&repo),
         Arc::clone(&sync_service),
     ));
 
-    // --- Run ---
+    // --- Run (main menu -> Full Backup / Watcher / AI Analysis) ---
     input_port
-        .run_sync()
+        .run()
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 

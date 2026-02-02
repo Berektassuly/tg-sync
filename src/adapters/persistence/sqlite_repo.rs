@@ -7,6 +7,7 @@
 use crate::domain::{DomainError, MediaReference, Message};
 use crate::ports::{EntityRegistry, RepoPort};
 use libsql::{params, Database};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tracing::info;
 
@@ -33,6 +34,12 @@ CREATE TABLE IF NOT EXISTS entity_registry (
     peer_type TEXT NOT NULL,
     username TEXT,
     updated_at INTEGER NOT NULL
+)"#;
+
+/// Blacklist: chat IDs to exclude from backup. One row per chat_id.
+const BLACKLIST_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS blacklist (
+    chat_id INTEGER PRIMARY KEY
 )"#;
 
 /// SQLite repository. One database file (messages.db) in the given base directory.
@@ -91,6 +98,10 @@ impl SqliteRepo {
             .map_err(|e| DomainError::Repo(e.to_string()))?;
         // Audit §6.2: Entity registry for persistent access_hash caching.
         conn.execute(ENTITY_REGISTRY_TABLE, ())
+            .await
+            .map_err(|e| DomainError::Repo(e.to_string()))?;
+
+        conn.execute(BLACKLIST_TABLE, ())
             .await
             .map_err(|e| DomainError::Repo(e.to_string()))?;
 
@@ -204,6 +215,53 @@ impl RepoPort for SqliteRepo {
             });
         }
         Ok(messages)
+    }
+
+    async fn get_blacklisted_ids(&self) -> Result<HashSet<i64>, DomainError> {
+        let conn = self
+            .db
+            .connect()
+            .map_err(|e| DomainError::Repo(e.to_string()))?;
+        let mut rows = conn
+            .query("SELECT chat_id FROM blacklist", ())
+            .await
+            .map_err(|e| DomainError::Repo(e.to_string()))?;
+        let mut ids = HashSet::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DomainError::Repo(e.to_string()))?
+        {
+            let chat_id: i64 = row.get(0).map_err(|e| DomainError::Repo(e.to_string()))?;
+            ids.insert(chat_id);
+        }
+        Ok(ids)
+    }
+
+    async fn update_blacklist(&self, ids: HashSet<i64>) -> Result<(), DomainError> {
+        let conn = self
+            .db
+            .connect()
+            .map_err(|e| DomainError::Repo(e.to_string()))?;
+        let tx = conn
+            .transaction()
+            .await
+            .map_err(|e| DomainError::Repo(e.to_string()))?;
+        tx.execute("DELETE FROM blacklist", ())
+            .await
+            .map_err(|e| DomainError::Repo(e.to_string()))?;
+        for chat_id in ids {
+            tx.execute(
+                "INSERT INTO blacklist (chat_id) VALUES (?1)",
+                params![chat_id],
+            )
+            .await
+            .map_err(|e| DomainError::Repo(e.to_string()))?;
+        }
+        tx.commit()
+            .await
+            .map_err(|e| DomainError::Repo(e.to_string()))?;
+        Ok(())
     }
 }
 

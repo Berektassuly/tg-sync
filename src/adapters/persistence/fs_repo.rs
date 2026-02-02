@@ -4,7 +4,7 @@
 
 use crate::domain::{DomainError, Message};
 use crate::ports::RepoPort;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{ErrorKind, SeekFrom};
 use std::path::Path;
 use tokio::fs;
@@ -169,5 +169,15 @@ impl RepoPort for FsRepo {
         let mut out: Vec<Message> = by_id.into_values().collect();
         out.sort_by(|a, b| b.date.cmp(&a.date));
         Ok(out)
+    }
+
+    /// FsRepo has no blacklist persistence; returns empty set.
+    async fn get_blacklisted_ids(&self) -> Result<HashSet<i64>, DomainError> {
+        Ok(HashSet::new())
+    }
+
+    /// FsRepo has no blacklist persistence; no-op.
+    async fn update_blacklist(&self, _ids: HashSet<i64>) -> Result<(), DomainError> {
+        Ok(())
     }
 }

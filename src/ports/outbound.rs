@@ -3,6 +3,7 @@
 //! Implemented by adapters.
 
 use crate::domain::{Chat, DomainError, MediaReference, Message, SignInResult};
+use std::collections::HashSet;
 
 /// Telegram API gateway. Fetch dialogs, messages, media.
 #[async_trait::async_trait]
@@ -45,6 +46,12 @@ pub trait RepoPort: Send + Sync {
         limit: u32,
         offset: u32,
     ) -> Result<Vec<Message>, DomainError>;
+
+    /// Get the set of chat IDs that are blacklisted (excluded from backup).
+    async fn get_blacklisted_ids(&self) -> Result<HashSet<i64>, DomainError>;
+
+    /// Sync the blacklist with the given set. Replaces the stored blacklist with `ids`.
+    async fn update_blacklist(&self, ids: HashSet<i64>) -> Result<(), DomainError>;
 }
 
 /// State port. Track last synced message ID per chat for incremental sync.

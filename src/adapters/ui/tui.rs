@@ -2,12 +2,13 @@
 //!
 //! Cyberpunk/Neon theme: prompt prefix [?], colored ChatType indicators.
 
-use crate::domain::{ChatType, DomainError};
-use crate::ports::{InputPort, TgGateway};
+use crate::domain::{Chat, ChatType, DomainError};
+use crate::ports::{InputPort, RepoPort, TgGateway};
 use crate::usecases::SyncService;
 use async_trait::async_trait;
 use inquire::ui::{Color, RenderConfig, StyleSheet, Styled};
-use inquire::{set_global_render_config, Confirm, MultiSelect, Text};
+use inquire::{set_global_render_config, Confirm, MultiSelect, Select, Text};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Neon Purple (#bc13fe) for prompt prefix and accents.
@@ -62,28 +63,74 @@ pub(crate) fn apply_theme() {
 /// TUI adapter. Inquire prompts with neon theme.
 pub struct TuiInputPort {
     tg: Arc<dyn TgGateway>,
+    repo: Arc<dyn RepoPort>,
     sync_service: Arc<SyncService>,
 }
 
 impl TuiInputPort {
-    pub fn new(tg: Arc<dyn TgGateway>, sync_service: Arc<SyncService>) -> Self {
-        Self { tg, sync_service }
+    pub fn new(
+        tg: Arc<dyn TgGateway>,
+        repo: Arc<dyn RepoPort>,
+        sync_service: Arc<SyncService>,
+    ) -> Self {
+        Self {
+            tg,
+            repo,
+            sync_service,
+        }
     }
 }
 
 #[async_trait]
 impl InputPort for TuiInputPort {
+    async fn run(&self) -> Result<(), DomainError> {
+        let options = vec![
+            "Full Backup".to_string(),
+            "Watcher / Daemon".to_string(),
+            "AI Analysis".to_string(),
+        ];
+        let choice = Select::new("Select mode", options.clone())
+            .prompt()
+            .map_err(|e| DomainError::Auth(e.to_string()))?;
+
+        match choice.as_str() {
+            "Full Backup" => self.run_sync().await,
+            "Watcher / Daemon" | "AI Analysis" => {
+                println!("Coming soon");
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
     async fn run_sync(&self) -> Result<(), DomainError> {
+        // Full Backup flow: dialogs -> blacklist selection -> filter -> sync
         let chats = self.tg.get_dialogs().await?;
+        if chats.is_empty() {
+            println!("No dialogs found.");
+            return Ok(());
+        }
+
+        let blacklisted_ids = self.repo.get_blacklisted_ids().await?;
         let options: Vec<String> = chats
             .iter()
             .map(|c| format!("{} {} ({})", chat_type_indicator(c.kind), c.title, c.id))
             .collect();
-        let selected = MultiSelect::new("Select chats to sync", options)
+        // Pre-select options that are already in the blacklist (indices where chat.id is in blacklisted_ids)
+        let default: Vec<usize> = chats
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| blacklisted_ids.contains(&c.id))
+            .map(|(i, _)| i)
+            .collect();
+
+        let selected = MultiSelect::new("Select chats to EXCLUDE (Blacklist)", options.clone())
+            .with_default(&default)
             .prompt()
             .map_err(|e| DomainError::Auth(e.to_string()))?;
-        // Map selected display strings back to chat IDs (match full option string)
-        let chat_ids: Vec<i64> = chats
+
+        // Selected options = new blacklist set
+        let new_blacklist: HashSet<i64> = chats
             .iter()
             .filter(|c| {
                 selected.contains(&format!(
@@ -96,6 +143,21 @@ impl InputPort for TuiInputPort {
             .map(|c| c.id)
             .collect();
 
+        self.repo.update_blacklist(new_blacklist.clone()).await?;
+
+        // Allowed chats = dialogs not in the new blacklist
+        let allowed: Vec<Chat> = chats
+            .iter()
+            .filter(|c| !new_blacklist.contains(&c.id))
+            .cloned()
+            .collect();
+        let allowed_ids: Vec<i64> = allowed.iter().map(|c| c.id).collect();
+
+        if allowed_ids.is_empty() {
+            println!("No chats selected for backup (all excluded).");
+            return Ok(());
+        }
+
         let include_media = Confirm::new("Download media files?")
             .with_default(true)
             .with_help_message("Photos, videos, documents. Press Enter for Yes.")
@@ -103,7 +165,7 @@ impl InputPort for TuiInputPort {
             .map_err(|e| DomainError::Auth(e.to_string()))?;
 
         self.sync_service
-            .sync_chats(&chat_ids, 100, include_media)
+            .sync_chats(&allowed_ids, 100, include_media)
             .await
     }
 

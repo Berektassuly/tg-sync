@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tg_sync::adapters::persistence::{fs_repo::FsRepo, state_json::StateJson};
+use tg_sync::adapters::persistence::{sqlite_repo::SqliteRepo, state_json::StateJson};
 use tg_sync::adapters::telegram::{auth_adapter::GrammersAuthAdapter, client::GrammersTgGateway};
 use tg_sync::adapters::tools::chatpack::ChatpackProcessor;
 use tg_sync::adapters::ui::tui::TuiInputPort;
@@ -68,7 +68,13 @@ async fn main() -> anyhow::Result<()> {
     // --- Gateway (clone of same client; fetch_messages and download_media can run concurrently) ---
     let tg: Arc<dyn TgGateway> = Arc::new(GrammersTgGateway::new(tg_client, cfg.export_delay_ms));
 
-    let repo: Arc<dyn RepoPort> = Arc::new(FsRepo::new(&data_path));
+    // Audit §2.4: Use SqliteRepo for ACID compliance, WAL mode, and EntityRegistry support.
+    // FsRepo (JSONL) lacks atomic writes and is vulnerable to data corruption on crash.
+    let repo: Arc<dyn RepoPort> = Arc::new(
+        SqliteRepo::connect(&data_path)
+            .await
+            .map_err(|e| anyhow::anyhow!("SQLite connect failed: {}", e))?,
+    );
     let state_impl = StateJson::new(&state_path);
     state_impl
         .load()

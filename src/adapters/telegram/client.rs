@@ -24,8 +24,9 @@ pub struct GrammersTgGateway {
     client: Client,
     /// If set, sleep this many ms before each message-history request (rate limiting).
     export_delay_ms: Option<u64>,
-    /// Cache InputPeer by chat_id so we don't call iter_dialogs on every get_messages/download_media (avoids FLOOD_WAIT).
-    peer_cache: Mutex<HashMap<i64, tl::enums::InputPeer>>,
+    /// Audit §2.1: Cache full Peer objects by chat_id to avoid iter_dialogs on every call.
+    /// Stores the Peer (not just InputPeer) so we can call to_ref() for download operations.
+    peer_cache: Mutex<HashMap<i64, grammers_client::peer::Peer>>,
 }
 
 impl GrammersTgGateway {
@@ -39,14 +40,22 @@ impl GrammersTgGateway {
         }
     }
 
-    /// Resolve chat_id to InputPeer, using cache to avoid repeated iter_dialogs (getDialogs) and FLOOD_WAIT.
+    /// Resolve chat_id to InputPeer, using cache to avoid repeated iter_dialogs (FLOOD_WAIT risk).
+    /// Audit §2.1: Caches the full Peer object so download_media can use to_ref() later.
     async fn resolve_input_peer(&self, chat_id: i64) -> Result<tl::enums::InputPeer, DomainError> {
+        // Check cache first
         {
             let cache = self.peer_cache.lock().await;
             if let Some(peer) = cache.get(&chat_id) {
-                return Ok(peer.clone());
+                // Convert cached Peer to InputPeer via PeerRef
+                if let Some(peer_ref) = peer.to_ref().await {
+                    return Ok(peer_ref.into());
+                }
+                // If to_ref() fails, fall through to re-fetch
             }
         }
+
+        // Not in cache or cache stale: iterate dialogs once
         let peer = {
             let mut dialogs = self.client.iter_dialogs();
             let mut found = None;
@@ -65,16 +74,22 @@ impl GrammersTgGateway {
                 DomainError::TgGateway(format!("peer {} not found in dialogs", chat_id))
             })?
         };
+
+        // Cache the full Peer object for future use
+        self.peer_cache.lock().await.insert(chat_id, peer.clone());
+
+        // Convert to InputPeer
         let peer_ref = peer
             .to_ref()
             .await
             .ok_or_else(|| DomainError::TgGateway("peer not in session cache".into()))?;
-        let input_peer: tl::enums::InputPeer = peer_ref.into();
-        self.peer_cache
-            .lock()
-            .await
-            .insert(chat_id, input_peer.clone());
-        Ok(input_peer)
+        Ok(peer_ref.into())
+    }
+
+    /// Audit §2.1: Get cached Peer for PeerRef conversion. Avoids dialog re-iteration in download_media.
+    /// Returns None if not cached; caller should call resolve_input_peer first to populate cache.
+    async fn get_cached_peer(&self, chat_id: i64) -> Option<grammers_client::peer::Peer> {
+        self.peer_cache.lock().await.get(&chat_id).cloned()
     }
 }
 
@@ -180,38 +195,29 @@ impl TgGateway for GrammersTgGateway {
         media_ref: &MediaReference,
         dest_path: &Path,
     ) -> Result<(), DomainError> {
-        // Audit §6.2: Use cached InputPeer to avoid re-iterating dialogs on every download.
-        // This prevents FLOOD_WAIT from getDialogs calls during high-throughput media downloads.
-        let input_peer = self
+        // Audit §2.1: First ensure peer is cached via resolve_input_peer.
+        // This populates the peer_cache if not already present.
+        let _ = self
             .resolve_input_peer(media_ref.chat_id)
             .await
             .map_err(|e| DomainError::Media(format!("peer resolution failed: {}", e)))?;
 
-        // Convert InputPeer to PeerRef for get_messages_by_id.
-        // We need to resolve the peer again from dialogs cache for the grammers API.
-        let peer_ref = {
-            let mut dialogs = self.client.iter_dialogs();
-            let mut found = None;
-            while let Some(dialog) = dialogs
-                .next()
-                .await
-                .map_err(|e| DomainError::Media(e.to_string()))?
-            {
-                let p = dialog.peer();
-                if p.id().bot_api_dialog_id() == media_ref.chat_id {
-                    found = Some(p.clone());
-                    break;
-                }
-            }
-            let peer = found.ok_or_else(|| {
-                DomainError::Media(format!("peer {} not found", media_ref.chat_id))
+        // Audit §2.1: Use cached Peer to get PeerRef without re-iterating dialogs.
+        // This avoids the FloodWait risk from repeated getDialogs calls.
+        let peer = self
+            .get_cached_peer(media_ref.chat_id)
+            .await
+            .ok_or_else(|| {
+                DomainError::Media(format!(
+                    "peer {} not in cache after resolve",
+                    media_ref.chat_id
+                ))
             })?;
-            peer.to_ref()
-                .await
-                .ok_or_else(|| DomainError::Media("peer not in session cache".into()))?
-        };
-        // Note: input_peer is cached for future get_messages calls; peer_ref used for this download.
-        let _ = input_peer; // Suppress unused warning; cache was populated by resolve_input_peer
+
+        let peer_ref = peer
+            .to_ref()
+            .await
+            .ok_or_else(|| DomainError::Media("peer not in session cache".into()))?;
 
         let messages = self
             .client

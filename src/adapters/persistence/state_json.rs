@@ -40,16 +40,36 @@ impl StateJson {
         Ok(())
     }
 
+    /// Audit §2.3: Atomic save using write-replace pattern.
+    /// 1. Write to temp file
+    /// 2. sync_all() to ensure flush to disk
+    /// 3. Atomic rename to target path
+    /// This prevents data loss if process crashes mid-write.
     async fn save(&self) -> Result<(), DomainError> {
         let data = self.cache.read().await;
         let json =
             serde_json::to_string_pretty(&*data).map_err(|e| DomainError::State(e.to_string()))?;
-        let mut f = fs::File::create(&self.path)
+
+        // Write to temp file first
+        let temp_path = self.path.with_extension("json.tmp");
+        let mut f = fs::File::create(&temp_path)
             .await
-            .map_err(|e| DomainError::State(e.to_string()))?;
+            .map_err(|e| DomainError::State(format!("create temp file: {}", e)))?;
         f.write_all(json.as_bytes())
             .await
-            .map_err(|e| DomainError::State(e.to_string()))?;
+            .map_err(|e| DomainError::State(format!("write temp file: {}", e)))?;
+        // Ensure data is flushed to disk before rename
+        f.sync_all()
+            .await
+            .map_err(|e| DomainError::State(format!("sync temp file: {}", e)))?;
+        drop(f); // Close file handle before rename
+
+        // Atomic rename: replaces target file in one operation
+        // On POSIX this is atomic; on Windows it's as close as we can get
+        tokio::fs::rename(&temp_path, &self.path)
+            .await
+            .map_err(|e| DomainError::State(format!("atomic rename failed: {}", e)))?;
+
         Ok(())
     }
 }

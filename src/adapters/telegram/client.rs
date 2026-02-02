@@ -12,14 +12,13 @@ use grammers_client::Client;
 use grammers_client::InvocationError;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
-/// Telegram gateway adapter. Wraps grammers Client (shared with auth adapter via Arc).
+/// Telegram gateway adapter. Wraps grammers Client (clone shared with auth adapter; no global lock).
 pub struct GrammersTgGateway {
-    client: Arc<Mutex<Client>>,
+    client: Client,
     /// If set, sleep this many ms before each message-history request (rate limiting).
     export_delay_ms: Option<u64>,
     /// Cache InputPeer by chat_id so we don't call iter_dialogs on every get_messages/download_media (avoids FLOOD_WAIT).
@@ -27,9 +26,9 @@ pub struct GrammersTgGateway {
 }
 
 impl GrammersTgGateway {
-    /// Create gateway with shared client (Arc<Mutex<Client>>) so auth and gateway can share the same session.
+    /// Create gateway with a client (use same session via clone in main).
     /// `export_delay_ms`: optional delay in ms before each history batch request (e.g. 500 for throttling).
-    pub fn new(client: Arc<Mutex<Client>>, export_delay_ms: Option<u64>) -> Self {
+    pub fn new(client: Client, export_delay_ms: Option<u64>) -> Self {
         Self {
             client,
             export_delay_ms,
@@ -46,8 +45,7 @@ impl GrammersTgGateway {
             }
         }
         let peer = {
-            let guard = self.client.lock().await;
-            let mut dialogs = guard.iter_dialogs();
+            let mut dialogs = self.client.iter_dialogs();
             let mut found = None;
             while let Some(dialog) = dialogs
                 .next()
@@ -80,8 +78,7 @@ impl GrammersTgGateway {
 #[async_trait]
 impl TgGateway for GrammersTgGateway {
     async fn get_dialogs(&self) -> Result<Vec<Chat>, DomainError> {
-        let guard = self.client.lock().await;
-        let mut dialogs = guard.iter_dialogs();
+        let mut dialogs = self.client.iter_dialogs();
         let mut chats = Vec::new();
         while let Some(dialog) = dialogs
             .next()
@@ -126,7 +123,6 @@ impl TgGateway for GrammersTgGateway {
         let offset_id = if max_id > 0 { max_id } else { 0 };
 
         for attempt in 0..3 {
-            let guard = self.client.lock().await;
             let req = tl::functions::messages::GetHistory {
                 peer: input_peer.clone(),
                 offset_id,
@@ -138,7 +134,7 @@ impl TgGateway for GrammersTgGateway {
                 hash: 0,
             };
 
-            match guard.invoke(&req).await {
+            match self.client.invoke(&req).await {
                 Ok(raw) => {
                     let (messages, _users, _chats) = match raw {
                         Messages::Messages(m) => (m.messages, m.users, m.chats),
@@ -157,7 +153,6 @@ impl TgGateway for GrammersTgGateway {
                 Err(InvocationError::Rpc(rpc)) if rpc.code == 420 => {
                     let wait_secs = rpc.value.unwrap_or(60) as u64;
                     warn!(attempt, wait_secs, "FloodWait, sleeping");
-                    drop(guard);
                     tokio::time::sleep(Duration::from_secs(wait_secs)).await;
                 }
                 Err(e) => return Err(DomainError::TgGateway(e.to_string())),
@@ -172,8 +167,7 @@ impl TgGateway for GrammersTgGateway {
         dest_path: &Path,
     ) -> Result<(), DomainError> {
         let peer = {
-            let guard = self.client.lock().await;
-            let mut dialogs = guard.iter_dialogs();
+            let mut dialogs = self.client.iter_dialogs();
             let mut found = None;
             while let Some(dialog) = dialogs
                 .next()
@@ -198,8 +192,6 @@ impl TgGateway for GrammersTgGateway {
 
         let messages = self
             .client
-            .lock()
-            .await
             .get_messages_by_id(peer_ref, &[media_ref.message_id])
             .await
             .map_err(|e| DomainError::Media(e.to_string()))?;
@@ -215,8 +207,6 @@ impl TgGateway for GrammersTgGateway {
             .ok_or_else(|| DomainError::Media("message has no media".into()))?;
 
         self.client
-            .lock()
-            .await
             .download_media(&media, dest_path)
             .await
             .map_err(|e| DomainError::Media(e.to_string()))?;

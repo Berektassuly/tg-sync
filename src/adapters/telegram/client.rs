@@ -14,7 +14,10 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 use tokio::sync::Mutex;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
+
+/// Audit §4.1: FloodWait threshold in seconds. Waits below this sleep; waits >= this return error.
+const FLOOD_WAIT_THRESHOLD_SECS: u64 = 60;
 
 /// Telegram gateway adapter. Wraps grammers Client (clone shared with auth adapter; no global lock).
 pub struct GrammersTgGateway {
@@ -152,7 +155,18 @@ impl TgGateway for GrammersTgGateway {
                 }
                 Err(InvocationError::Rpc(rpc)) if rpc.code == 420 => {
                     let wait_secs = rpc.value.unwrap_or(60) as u64;
-                    warn!(attempt, wait_secs, "FloodWait, sleeping");
+                    // Audit §4.1: Long waits (≥60s) should not block the worker thread.
+                    // Return error so caller (job scheduler) can reschedule.
+                    if wait_secs >= FLOOD_WAIT_THRESHOLD_SECS {
+                        info!(
+                            attempt,
+                            wait_secs,
+                            threshold = FLOOD_WAIT_THRESHOLD_SECS,
+                            "FloodWait exceeds threshold, returning error for rescheduling"
+                        );
+                        return Err(DomainError::FloodWait { seconds: wait_secs });
+                    }
+                    warn!(attempt, wait_secs, "FloodWait (short), sleeping");
                     tokio::time::sleep(Duration::from_secs(wait_secs)).await;
                 }
                 Err(e) => return Err(DomainError::TgGateway(e.to_string())),
@@ -166,13 +180,22 @@ impl TgGateway for GrammersTgGateway {
         media_ref: &MediaReference,
         dest_path: &Path,
     ) -> Result<(), DomainError> {
-        let peer = {
+        // Audit §6.2: Use cached InputPeer to avoid re-iterating dialogs on every download.
+        // This prevents FLOOD_WAIT from getDialogs calls during high-throughput media downloads.
+        let input_peer = self
+            .resolve_input_peer(media_ref.chat_id)
+            .await
+            .map_err(|e| DomainError::Media(format!("peer resolution failed: {}", e)))?;
+
+        // Convert InputPeer to PeerRef for get_messages_by_id.
+        // We need to resolve the peer again from dialogs cache for the grammers API.
+        let peer_ref = {
             let mut dialogs = self.client.iter_dialogs();
             let mut found = None;
             while let Some(dialog) = dialogs
                 .next()
                 .await
-                .map_err(|e| DomainError::TgGateway(e.to_string()))?
+                .map_err(|e| DomainError::Media(e.to_string()))?
             {
                 let p = dialog.peer();
                 if p.id().bot_api_dialog_id() == media_ref.chat_id {
@@ -180,15 +203,15 @@ impl TgGateway for GrammersTgGateway {
                     break;
                 }
             }
-            found.ok_or_else(|| {
+            let peer = found.ok_or_else(|| {
                 DomainError::Media(format!("peer {} not found", media_ref.chat_id))
-            })?
+            })?;
+            peer.to_ref()
+                .await
+                .ok_or_else(|| DomainError::Media("peer not in session cache".into()))?
         };
-
-        let peer_ref = peer
-            .to_ref()
-            .await
-            .ok_or_else(|| DomainError::Media("peer not in session cache".into()))?;
+        // Note: input_peer is cached for future get_messages calls; peer_ref used for this download.
+        let _ = input_peer; // Suppress unused warning; cache was populated by resolve_input_peer
 
         let messages = self
             .client

@@ -23,4 +23,9 @@ pub enum DomainError {
 
     #[error("Media download failed: {0}")]
     Media(String),
+
+    /// FloodWait error: caller should reschedule job after `seconds` seconds.
+    /// Per Audit §4.1: long waits (≥60s) should not block the worker thread.
+    #[error("FloodWait: retry after {seconds} seconds")]
+    FloodWait { seconds: u64 },
 }

@@ -5,7 +5,7 @@
 //! All chats share one database file: data/messages.db
 
 use crate::domain::{DomainError, MediaReference, Message};
-use crate::ports::RepoPort;
+use crate::ports::{EntityRegistry, RepoPort};
 use libsql::{params, Database};
 use std::path::{Path, PathBuf};
 use tracing::info;
@@ -24,6 +24,17 @@ CREATE TABLE IF NOT EXISTS messages (
 const MESSAGES_INDEX: &str =
     "CREATE INDEX IF NOT EXISTS idx_messages_chat_date ON messages (chat_id, date DESC)";
 
+/// Audit §6.2: Persistent entity registry for access_hash caching.
+/// Avoids re-iterating dialogs (getDialogs) which triggers FLOOD_WAIT.
+const ENTITY_REGISTRY_TABLE: &str = r#"
+CREATE TABLE IF NOT EXISTS entity_registry (
+    peer_id INTEGER PRIMARY KEY,
+    access_hash INTEGER NOT NULL,
+    peer_type TEXT NOT NULL,
+    username TEXT,
+    updated_at INTEGER NOT NULL
+)"#;
+
 /// SQLite repository. One database file (messages.db) in the given base directory.
 /// Chat IDs are stored as a column; all chats share the same file.
 pub struct SqliteRepo {
@@ -34,6 +45,9 @@ pub struct SqliteRepo {
 impl SqliteRepo {
     /// Connect to (or create) the SQLite database and ensure the schema exists.
     /// Call this once at startup; the returned repo is safe to share via Arc.
+    ///
+    /// Audit §5.3: Sets WAL mode and synchronous=NORMAL for concurrent read/write
+    /// and better performance without sacrificing durability.
     pub async fn connect(base_dir: impl AsRef<Path>) -> Result<Self, DomainError> {
         let base = base_dir.as_ref();
         std::fs::create_dir_all(base).map_err(|e| DomainError::Repo(e.to_string()))?;
@@ -44,12 +58,32 @@ impl SqliteRepo {
             .await
             .map_err(|e| DomainError::Repo(e.to_string()))?;
         let conn = db.connect().map_err(|e| DomainError::Repo(e.to_string()))?;
+
+        // Audit §5.3: WAL mode enables concurrent readers + one writer.
+        conn.execute("PRAGMA journal_mode=WAL", ())
+            .await
+            .map_err(|e| DomainError::Repo(format!("WAL pragma failed: {}", e)))?;
+        // Audit §5.3: synchronous=NORMAL is safe with WAL and faster than FULL.
+        conn.execute("PRAGMA synchronous=NORMAL", ())
+            .await
+            .map_err(|e| DomainError::Repo(format!("synchronous pragma failed: {}", e)))?;
+
         conn.execute(MESSAGES_TABLE, ())
             .await
             .map_err(|e| DomainError::Repo(e.to_string()))?;
         conn.execute(MESSAGES_INDEX, ())
             .await
             .map_err(|e| DomainError::Repo(e.to_string()))?;
+        // Audit §6.2: Entity registry for persistent access_hash caching.
+        conn.execute(ENTITY_REGISTRY_TABLE, ())
+            .await
+            .map_err(|e| DomainError::Repo(e.to_string()))?;
+
+        info!(
+            path = %db_path.display(),
+            "SQLite connected with WAL mode and entity_registry"
+        );
+
         Ok(Self {
             db,
             db_path: db_path.to_path_buf(),
@@ -155,5 +189,69 @@ impl RepoPort for SqliteRepo {
             });
         }
         Ok(messages)
+    }
+}
+
+/// Audit §6.2: Persistent entity registry implementation.
+/// Enables fast InputPeer resolution without re-iterating dialogs.
+#[async_trait::async_trait]
+impl EntityRegistry for SqliteRepo {
+    async fn get_access_hash(&self, peer_id: i64) -> Result<Option<i64>, DomainError> {
+        let conn = self
+            .db
+            .connect()
+            .map_err(|e| DomainError::Repo(e.to_string()))?;
+        let mut rows = conn
+            .query(
+                "SELECT access_hash FROM entity_registry WHERE peer_id = ?1",
+                params![peer_id],
+            )
+            .await
+            .map_err(|e| DomainError::Repo(e.to_string()))?;
+
+        if let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DomainError::Repo(e.to_string()))?
+        {
+            let access_hash: i64 = row.get(0).map_err(|e| DomainError::Repo(e.to_string()))?;
+            Ok(Some(access_hash))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn save_entity(
+        &self,
+        peer_id: i64,
+        access_hash: i64,
+        peer_type: &str,
+        username: Option<&str>,
+    ) -> Result<(), DomainError> {
+        let conn = self
+            .db
+            .connect()
+            .map_err(|e| DomainError::Repo(e.to_string()))?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        conn.execute(
+            r#"
+            INSERT INTO entity_registry (peer_id, access_hash, peer_type, username, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT (peer_id) DO UPDATE SET
+                access_hash = excluded.access_hash,
+                peer_type = excluded.peer_type,
+                username = excluded.username,
+                updated_at = excluded.updated_at
+            "#,
+            params![peer_id, access_hash, peer_type, username, now],
+        )
+        .await
+        .map_err(|e| DomainError::Repo(e.to_string()))?;
+
+        Ok(())
     }
 }

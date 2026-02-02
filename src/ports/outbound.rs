@@ -83,3 +83,20 @@ pub trait ProcessorPort: Send + Sync {
         data_path: &std::path::Path,
     ) -> Result<(), DomainError>;
 }
+
+/// Audit §6.2: Persistent entity registry for access_hash caching.
+/// Stores (peer_id, access_hash) to avoid re-iterating dialogs (FLOOD_WAIT risk).
+#[async_trait::async_trait]
+pub trait EntityRegistry: Send + Sync {
+    /// Get cached access_hash for a peer. Returns None if not cached.
+    async fn get_access_hash(&self, peer_id: i64) -> Result<Option<i64>, DomainError>;
+
+    /// Save or update an entity's access_hash in the registry.
+    async fn save_entity(
+        &self,
+        peer_id: i64,
+        access_hash: i64,
+        peer_type: &str,
+        username: Option<&str>,
+    ) -> Result<(), DomainError>;
+}

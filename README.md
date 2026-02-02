@@ -1,137 +1,217 @@
+<div align="center">
+
 # tg-sync
 
-**The pragmatic, incremental Telegram synchronizer built in Rust.**
+**High-Performance, Resilient Telegram Archiving System**
 
-[![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![WIP](https://img.shields.io/badge/status-WIP-yellow.svg)](https://github.com)
+[![Rust](https://img.shields.io/badge/rust-1.75%2B-orange?logo=rust)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/Berektassuly/tg-sync/ci.yml?branch=main)](https://github.com/Berektassuly/tg-sync/actions)
 
-`tg-sync` is a high-performance CLI tool that acts as a **Telegram Userbot**. It connects via **MTProto** (using [grammers](https://github.com/Lonami/grammers)), fetches your chat list, and performs **incremental backups** of message history and media to local disk. It integrates with **Chatpack** for post-processing of archived logs.
+A high-throughput, asynchronous tool for ingesting and archiving Telegram chat history with strict ACID compliance.
+
+</div>
+
+---
+
+## Overview
+
+`tg-sync` is not a simple chatbot script. It is an enterprise-grade archival solution designed to handle **massive datasets** without crashing (OOM) or being banned (FLOOD_WAIT). Built on a **Hexagonal Architecture**, it cleanly separates business logic from infrastructure, making the system testable, maintainable, and resilient.
+
+The system uses the MTProto protocol directly via the [grammers](https://github.com/Lonami/grammers) library, enabling full control over API interactions, rate limiting, and session management.
+
+---
+
+## Key Features
+
+### Memory Safety
+
+- **Bounded Channels with Backpressure**: The sync producer and media consumer communicate via a `tokio::sync::mpsc` channel with a configurable capacity (default: `1000`). When the channel is full, `send().await` yields, naturally throttling the producer. This prevents unbounded memory growth regardless of download speed.
+- **Semaphore-Controlled Concurrency**: Media downloads are limited to 3 concurrent operations via a `tokio::sync::Semaphore`, preventing resource exhaustion.
+
+### Resilience
+
+- **Intelligent FLOOD_WAIT Handling**: The system distinguishes between short and long API rate limits:
+  - **Short waits (< 60s)**: The worker thread sleeps and retries automatically.
+  - **Long waits (≥ 60s)**: Returns a `FloodWait` error, allowing the job scheduler to reschedule without blocking the thread.
+- **Automatic Retry with Backoff**: Media downloads retry up to 3 times with linear backoff (2s, 4s, 6s) before failing permanently.
+- **Persistent Peer Caching**: An `entity_registry` table caches `access_hash` values per peer, eliminating redundant `getDialogs` calls which are a primary cause of `FLOOD_WAIT` errors.
+
+### Data Integrity
+
+- **SQLite with WAL Mode**: All messages are persisted in a single `messages.db` file using SQLite's Write-Ahead Logging for concurrent read/write access and crash resilience.
+- **Atomic State Writes**: The `state.json` file (tracking `last_message_id` per chat) uses a **write-replace pattern**: data is written to a `.tmp` file, `sync_all()` flushes to disk, and an atomic `rename()` replaces the original. This prevents data loss during unexpected termination.
+- **Transactional Batch Saves**: Message batches are inserted within a SQLite transaction. Either the entire batch commits, or nothing does.
+
+### Efficiency
+
+- **Hybrid Schema (JSONB + SQL Columns)**: Raw media metadata is stored as `media_json` (flexible, future-proof) while core fields (`id`, `date`, `text`, `from_user_id`) are indexed SQL columns for fast queries.
+- **Incremental Sync**: Only messages newer than the last checkpoint are fetched. Client-side boundary enforcement ensures correctness even when the API ignores `min_id`/`max_id`.
+- **Forward History Filling**: Paginates from newest to oldest, processing in forward order (oldest → newest) for consistent history.
 
 ---
 
 ## Architecture
 
-### Hexagonal Architecture (Ports & Adapters)
-
-The project is structured around **Hexagonal Architecture** (Ports & Adapters) to **decouple domain logic from the Grammers API and infrastructure**. The core use cases depend only on abstract **ports**; concrete **adapters** implement Telegram (grammers), file I/O, and UI. This allows:
-
-- **Testability**: Domain and use cases can be tested with mock gateways and repositories.
-- **Swapability**: Replacing grammers with another Telegram client would require only new adapters; domain and use cases stay unchanged.
-- **Clear boundaries**: Business rules live in `domain` and `usecases`; I/O and framework details live in `adapters`.
-
-### Project Structure
+The application follows a **producer-consumer pipeline** with backpressure:
 
 ```
-tg-sync/
-├── src/
-│   ├── domain/           # Core entities & errors (Chat, Message, MediaReference)
-│   ├── ports/            # Inbound (InputPort) & Outbound (TgGateway, RepoPort, StatePort, ProcessorPort)
-│   ├── adapters/         # Implementations of ports
-│   │   ├── telegram/     # GrammersTgGateway (grammers Client)
-│   │   ├── persistence/  # FsRepo, StateJson (filesystem)
-│   │   ├── tools/        # ChatpackProcessor (ProcessorPort)
-│   │   └── ui/           # TuiInputPort (inquire prompts)
-│   ├── usecases/         # SyncService, MediaWorker, AuthService
-│   ├── shared/           # Config (env + optional file)
-│   ├── lib.rs
-│   └── main.rs           # Wiring: create adapters, inject into use cases, run InputPort
-├── Cargo.toml
-└── .env.example
+┌──────────────────────────────────────────────────────────────────────┐
+│                           tg-sync Pipeline                           │
+└──────────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────┐                          ┌─────────────────────┐
+  │   SyncService   │                          │    MediaWorker      │
+  │    (Producer)   │                          │    (Consumer)       │
+  │                 │    Bounded Channel       │                     │
+  │  Fetches msgs   │──────[capacity: 1000]───►│  Downloads media    │
+  │  from Telegram  │    mpsc::Sender.send()   │  to disk (3 conc.)  │
+  │                 │    blocks when full      │                     │
+  └────────┬────────┘                          └──────────┬──────────┘
+           │                                              │
+           │ Transactional Insert                         │ File I/O
+           ▼                                              ▼
+  ┌─────────────────┐                          ┌─────────────────────┐
+  │  SQLite (WAL)   │                          │     data/media/     │
+  │  messages.db    │                          │  {chat}_{msg}.ext   │
+  └─────────────────┘                          └─────────────────────┘
+           │
+           │ Atomic Rename
+           ▼
+  ┌─────────────────┐
+  │   state.json    │
+  │  (checkpoints)  │
+  └─────────────────┘
 ```
 
-### Sync Engine (Delta Sync with Pagination)
+**Hexagonal Architecture Layers:**
 
-The **Sync Engine** uses **`min_id` / `max_id` state tracking** to fetch all **new** messages (delta sync):
-
-1. **StatePort** (e.g. `StateJson`) stores the last synced message ID per chat (`last_message_id`).
-2. **SyncService** paginates over batches: calls `get_messages(chat_id, min_id, max_id, limit)` where `min_id = last_message_id` and `max_id` starts at 0 (no upper bound).
-3. The **TgGateway** adapter passes `min_id` and `max_id` to Telegram’s `GetHistory`; messages with `min_id < id < max_id` are returned (or `id > min_id` when `max_id = 0`).
-4. After each batch, `max_id` is set to the minimum ID in the batch to fetch the next chunk of older messages. The loop continues until an empty batch or fewer than `limit` messages are returned.
-5. After all messages are saved via **RepoPort**, the state is updated with the new max message ID.
-
-This fetches all pending messages (no cutoff) and avoids re-downloading already archived messages.
-
-### Async Media Pipeline (Producer–Consumer)
-
-Media downloads run in a **non-blocking** pipeline:
-
-- **Producer**: During sync, **SyncService** pushes `MediaReference` values into an **unbounded MPSC channel** instead of blocking on downloads.
-- **Consumer**: **MediaWorker** reads from the channel and downloads files via **TgGateway**, with a **semaphore** (e.g. 3 concurrent downloads) for rate limiting.
-- Text sync and media download run **concurrently**; the sync loop is not blocked by slow media.
+| Layer | Responsibility | Key Files |
+|-------|----------------|-----------|
+| **Domain** | Pure business entities, error types | `entities.rs`, `errors.rs` |
+| **Ports** | Abstract traits (inbound/outbound interfaces) | `inbound.rs`, `outbound.rs` |
+| **Adapters** | Concrete implementations (Telegram, SQLite, TUI) | `telegram/`, `persistence/`, `ui/` |
+| **Use Cases** | Business logic orchestration | `sync_service.rs`, `media_worker.rs`, `auth_service.rs` |
 
 ---
 
-## Features
-
-- **Interactive CLI (TUI)** — Inquire-based prompts to select chats and run sync.
-- **Incremental synchronization** — State management per chat (`last_message_id`); only new messages are fetched.
-- **Auto-retry on `FLOOD_WAIT`** — Telegram rate limits (RPC 420) are handled by sleeping for the required time and retrying.
-- **Parallel media downloading** — Bounded concurrency for media downloads while sync continues.
-- **Chatpack integration** — Processor port for post-processing archived data (e.g. log consolidation); adapter can invoke an external Chatpack tool.
-
----
-
-## Getting Started
+## Installation
 
 ### Prerequisites
 
-- **Rust** toolchain (e.g. 1.70+): [rustup](https://rustup.rs/).
-- **Telegram API credentials**: Create an application at [my.telegram.org](https://my.telegram.org/apps) to obtain **API ID** and **API Hash**. These are required for MTProto access.
+- **Rust**: 1.75+ (stable) — [Install Rust](https://rustup.rs/)
+- **SQLite**: The `libsql` crate bundles SQLite; no system-level installation required.
 
-### Configuration
-
-Copy the example env file and set your credentials:
+### Build
 
 ```bash
-cp .env.example .env
+git clone https://github.com/Berektassuly/tg-sync.git
+cd tg-sync
+cargo build --release
 ```
 
-Edit `.env` with your values:
+The binary will be available at `target/release/tg-sync.exe` (Windows) or `target/release/tg-sync` (Unix).
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `TG_SYNC_API_ID` | Yes | Your Telegram API ID (integer). |
-| `TG_SYNC_API_HASH` | Yes | Your Telegram API Hash (string). |
-| `TG_SYNC_DATA_DIR` | No | Base directory for data and state (default: `./data`). |
-| `TG_SYNC_SESSION_PATH` | No | Session file path (optional; see app docs). |
-| `TG_SYNC_CONFIG` | No | Optional config file (e.g. `config.toml`) for extra settings. |
+---
 
-Example `.env`:
+## Configuration
 
-```env
+### Environment Variables
+
+Create a `.env` file in the project root (see `.env.example`):
+
+```dotenv
+# Required: Telegram API Credentials
+# Obtain from https://my.telegram.org/apps
 TG_SYNC_API_ID=12345678
-TG_SYNC_API_HASH=your_api_hash_here
-# TG_SYNC_DATA_DIR=./data
-# TG_SYNC_SESSION_PATH=session.txt
+TG_SYNC_API_HASH=abcdef1234567890abcdef1234567890
+
+# Optional: Data Storage Paths
+# TG_SYNC_DATA_DIR=./data              # Message DB, media, state (default: ./data)
+# TG_SYNC_SESSION_PATH=./session.db    # MTProto session file (default: ./session.db)
+
+# Optional: Rate Limiting
+# EXPORT_DELAY_MS=500                  # Delay before each GetHistory request (ms)
+# SYNC_DELAY_MS=500                    # Delay between sync batches (ms, default: 500)
+
+# Optional: Backpressure Tuning
+# TG_SYNC_MEDIA_QUEUE_SIZE=1000        # Bounded channel capacity (default: 1000)
+
+# Optional: External Config File
+# TG_SYNC_CONFIG=config.toml           # Additional config file (TOML format)
 ```
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `TG_SYNC_API_ID` | **Yes** | — | Your Telegram API ID |
+| `TG_SYNC_API_HASH` | **Yes** | — | Your Telegram API Hash |
+| `TG_SYNC_DATA_DIR` | No | `./data` | Directory for messages.db, media, state.json |
+| `TG_SYNC_SESSION_PATH` | No | `./session.db` | Path to persistent MTProto session |
+| `SYNC_DELAY_MS` | No | `500` | Milliseconds between message batch requests |
+| `EXPORT_DELAY_MS` | No | — | Milliseconds before each GetHistory API call |
+| `TG_SYNC_MEDIA_QUEUE_SIZE` | No | `1000` | Bounded channel capacity for media pipeline |
 
 ---
 
 ## Usage
 
-Build and run (release recommended for performance):
-
 ```bash
+# Run in release mode (recommended for production)
 cargo run --release
+
+# Or run the compiled binary directly
+./target/release/tg-sync
 ```
 
-**Login flow** (when the client is not yet authorized):
+On first run, you will be prompted to authenticate with your Telegram account by entering your phone number and the verification code sent via Telegram/SMS. If two-factor authentication (2FA) is enabled, you will also be prompted for your password.
 
-1. **Phone** — You are prompted for your phone number (e.g. `+1234567890`).
-2. **SMS code** — Enter the one-time code sent by Telegram (app or SMS).
-3. **2FA (if enabled)** — If the account has two-factor authentication, you are prompted for the cloud password (hint is shown).
-
-After successful login, the TUI lets you **select chats** to sync. Sync runs incrementally and queues media for background download.
+Session data is persisted to `session.db`, so subsequent runs will not require re-authentication.
 
 ---
 
-## Disclaimer
+## Output Structure
 
-**Important:** This tool operates as a **Userbot** (using your user account via the Telegram client API). Userbot usage may **violate Telegram’s Terms of Service**. Use at your own risk. The authors and contributors are **not responsible** for any account restrictions, bans, or other consequences resulting from the use of this software. Prefer official APIs and bots where possible.
+```
+./
+├── session.db          # MTProto session (persistent login)
+└── data/
+    ├── messages.db     # SQLite database (all chats, WAL mode)
+    ├── state.json      # Sync checkpoints (last_message_id per chat)
+    └── media/
+        ├── -1002958729758_23807.jpg
+        ├── -1002958729758_23819.bin
+        └── ...
+```
+
+---
+
+## Tech Stack
+
+| Category | Library | Purpose |
+|----------|---------|---------|
+| **Runtime** | [tokio](https://tokio.rs/) | Asynchronous runtime (multi-threaded) |
+| **Telegram** | [grammers](https://github.com/Lonami/grammers) | MTProto client (user-mode, not Bot API) |
+| **Database** | [libsql](https://github.com/tursodatabase/libsql) | SQLite with WAL mode, async queries |
+| **Serialization** | [serde](https://serde.rs/) / [serde_json](https://github.com/serde-rs/json) | JSON encoding for media refs and state |
+| **Error Handling** | [thiserror](https://github.com/dtolnay/thiserror) / [anyhow](https://github.com/dtolnay/anyhow) | Typed domain errors and context-rich failures |
+| **Logging** | [tracing](https://tracing.rs/) | Structured, async-aware logging |
+| **Configuration** | [config](https://github.com/mehcode/config-rs) / [dotenv](https://github.com/dotenv-rs/dotenv) | Layered config from env vars and files |
+| **TUI** | [inquire](https://github.com/mikaelmello/inquire) / [indicatif](https://github.com/console-rs/indicatif) | Interactive prompts and progress bars |
+
+---
+
+## Contact
+
+**Mukhammedali Berektassuly**
+
+> This project was built with 💜 by a 17-year-old developer from Kazakhstan
+
+- Website: [berektassuly.com](https://berektassuly.com)
+- Email: [mukhammedali@berektassuly.com](mailto:mukhammedali@berektassuly.com)
+- X/Twitter: [@berektassuly](https://x.com/berektassuly)
 
 ---
 
 ## License
 
-Licensed under the **MIT License**. See [LICENSE](LICENSE) for the full text.
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.

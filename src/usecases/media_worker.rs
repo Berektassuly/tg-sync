@@ -6,11 +6,19 @@ use crate::domain::{DomainError, MediaReference};
 use crate::ports::TgGateway;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::time::sleep;
 use tracing::{debug, error, info};
 
 /// Maximum concurrent media downloads.
 const MAX_CONCURRENT: usize = 3;
+
+/// Maximum retry attempts for a single media download.
+const MAX_RETRIES: u32 = 3;
+
+/// Base delay in seconds for linear backoff (sleep = retry_count * BASE_BACKOFF_SECS).
+const BASE_BACKOFF_SECS: u64 = 2;
 
 /// Media worker. Consumes channel and downloads via TgGateway.
 pub struct MediaWorker {
@@ -68,7 +76,39 @@ impl MediaWorker {
             return Ok(());
         }
 
-        tg.download_media(media_ref, &dest).await
+        let mut last_error = None;
+        for attempt in 0..=MAX_RETRIES {
+            match tg.download_media(media_ref, &dest).await {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    last_error = Some(e);
+                    if attempt < MAX_RETRIES {
+                        let delay_secs = (attempt + 1) as u64 * BASE_BACKOFF_SECS;
+                        debug!(
+                            chat_id = media_ref.chat_id,
+                            msg_id = media_ref.message_id,
+                            attempt = attempt + 1,
+                            max_retries = MAX_RETRIES,
+                            delay_secs,
+                            error = %last_error.as_ref().unwrap(),
+                            "download failed, retrying after backoff"
+                        );
+                        sleep(Duration::from_secs(delay_secs)).await;
+                    }
+                }
+            }
+        }
+
+        let err = last_error.expect("last_error set in loop");
+        error!(
+            chat_id = media_ref.chat_id,
+            msg_id = media_ref.message_id,
+            file = %filename,
+            error = %err,
+            "Max retries exceeded for {}",
+            filename
+        );
+        Err(err)
     }
 }
 

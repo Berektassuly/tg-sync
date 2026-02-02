@@ -15,14 +15,14 @@ const MAX_CONCURRENT: usize = 3;
 /// Media worker. Consumes channel and downloads via TgGateway.
 pub struct MediaWorker {
     tg: Arc<dyn TgGateway>,
-    rx: mpsc::UnboundedReceiver<MediaReference>,
+    rx: mpsc::Receiver<MediaReference>,
     output_dir: PathBuf,
 }
 
 impl MediaWorker {
     pub fn new(
         tg: Arc<dyn TgGateway>,
-        rx: mpsc::UnboundedReceiver<MediaReference>,
+        rx: mpsc::Receiver<MediaReference>,
         output_dir: PathBuf,
     ) -> Self {
         Self { tg, rx, output_dir }

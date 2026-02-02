@@ -76,8 +76,13 @@ async fn main() -> anyhow::Result<()> {
 
     let _processor = Arc::new(ChatpackProcessor::new(None::<&str>));
 
-    // --- Media pipeline ---
-    let (media_tx, media_rx) = mpsc::unbounded_channel();
+    // --- Media pipeline (bounded channel for backpressure) ---
+    let media_queue_size = cfg.media_queue_size_or_default();
+    info!(
+        media_queue_size,
+        "media queue buffer: {} (backpressure)", media_queue_size
+    );
+    let (media_tx, media_rx) = mpsc::channel(media_queue_size);
     let media_dir = data_path.join("media");
     tokio::fs::create_dir_all(&media_dir)
         .await

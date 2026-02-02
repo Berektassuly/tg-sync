@@ -3,7 +3,7 @@
 //! - Forward history filling (oldest -> newest): starts from last_message_id (or 0)
 //!   and paginates until the top of the chat (API returns newest-first; we iterate
 //!   by setting max_id = batch_min to fetch older chunks).
-//! - Sends media refs to mpsc channel for async download (non-blocking)
+//! - Sends media refs to bounded mpsc channel for async download; send().await provides backpressure when queue is full.
 //! - Updates state only after successful save
 //! - Configurable delay between batches (SYNC_DELAY_MS) to avoid FLOOD_WAIT
 
@@ -19,7 +19,7 @@ pub struct SyncService {
     tg: Arc<dyn TgGateway>,
     repo: Arc<dyn RepoPort>,
     state: Arc<dyn StatePort>,
-    media_tx: mpsc::UnboundedSender<MediaReference>,
+    media_tx: mpsc::Sender<MediaReference>,
     /// Delay between message batch requests to avoid FLOOD_WAIT.
     delay: Duration,
 }
@@ -29,7 +29,7 @@ impl SyncService {
         tg: Arc<dyn TgGateway>,
         repo: Arc<dyn RepoPort>,
         state: Arc<dyn StatePort>,
-        media_tx: mpsc::UnboundedSender<MediaReference>,
+        media_tx: mpsc::Sender<MediaReference>,
         delay: Duration,
     ) -> Self {
         Self {
@@ -58,8 +58,12 @@ impl SyncService {
         let mut total_synced = 0usize;
         let mut total_media_queued = 0usize;
         let mut current_head_id = last_known_id;
+        let mut channel_closed = false;
 
         loop {
+            if channel_closed {
+                break;
+            }
             let mut messages = self.tg.get_messages(chat_id, min_id, max_id, limit).await?;
 
             // Defensive: only keep messages within our range (API may return boundary)
@@ -72,18 +76,21 @@ impl SyncService {
             // Process in forward order (oldest -> newest) for consistent history filling
             messages.sort_by_key(|m| m.id);
 
-            // Extract media refs and queue for download (non-blocking) when enabled
+            // Extract media refs and queue for download; send().await blocks when buffer is full (backpressure)
             if include_media {
                 for msg in &messages {
                     if let Some(ref m) = msg.media {
-                        if self.media_tx.send(m.clone()).is_ok() {
-                            total_media_queued += 1;
-                        } else {
-                            warn!(
-                                chat_id,
-                                msg_id = msg.id,
-                                "media channel closed, dropping ref"
-                            );
+                        match self.media_tx.send(m.clone()).await {
+                            Ok(()) => total_media_queued += 1,
+                            Err(_) => {
+                                warn!(
+                                    chat_id,
+                                    msg_id = msg.id,
+                                    "media channel closed, stopping media queue for this chat"
+                                );
+                                channel_closed = true;
+                                break;
+                            }
                         }
                     }
                 }

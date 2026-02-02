@@ -15,6 +15,10 @@ pub struct AppConfig {
     /// Delay in ms between sync batch requests (rate limiting to avoid FLOOD_WAIT). Read from SYNC_DELAY_MS.
     #[serde(default)]
     pub sync_delay_ms: Option<u64>,
+
+    /// Max number of media refs buffered between sync loop and media worker (backpressure). Read from MEDIA_QUEUE_SIZE.
+    #[serde(default)]
+    pub media_queue_size: Option<usize>,
 }
 
 impl AppConfig {
@@ -38,11 +42,22 @@ impl AppConfig {
                 cfg.sync_delay_ms = Some(ms);
             }
         }
+        // MEDIA_QUEUE_SIZE: bounded channel buffer for media refs (backpressure; default 1000)
+        if let Ok(s) = std::env::var("TG_SYNC_MEDIA_QUEUE_SIZE") {
+            if let Ok(n) = s.parse::<usize>() {
+                cfg.media_queue_size = Some(n);
+            }
+        }
         Ok(cfg)
     }
 
     /// Returns sync delay in milliseconds. Defaults to 500 if unset or invalid.
     pub fn sync_delay_ms_or_default(&self) -> u64 {
         self.sync_delay_ms.unwrap_or(500)
+    }
+
+    /// Returns media queue buffer size. Defaults to 1000 if unset or invalid.
+    pub fn media_queue_size_or_default(&self) -> usize {
+        self.media_queue_size.unwrap_or(1000)
     }
 }

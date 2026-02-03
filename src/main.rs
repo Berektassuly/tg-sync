@@ -86,7 +86,6 @@ async fn main() -> anyhow::Result<()> {
     let tg: Arc<dyn TgGateway> = Arc::new(GrammersTgGateway::new(tg_client, cfg.export_delay_ms));
 
     // Audit §2.4: Use SqliteRepo for ACID compliance, WAL mode, and EntityRegistry support.
-    // FsRepo (JSONL) lacks atomic writes and is vulnerable to data corruption on crash.
     let sqlite_repo = Arc::new(
         SqliteRepo::connect(&data_path)
             .await

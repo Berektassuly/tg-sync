@@ -21,7 +21,7 @@ use tracing::{info, warn};
 
 /// Bounded channel capacity for media refs. Producer (sync) blocks on send().await when full (backpressure).
 const CHANNEL_CAPACITY: usize = DEFAULT_MEDIA_QUEUE_SIZE;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

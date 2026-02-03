@@ -6,7 +6,7 @@
 
 use crate::domain::{AnalysisResult, DomainError, MediaReference, Message, MessageEdit, WeekGroup};
 use crate::ports::{AnalysisLogPort, EntityRegistry, RepoPort};
-use libsql::{params, Database};
+use libsql::{Database, params};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use tracing::info;

@@ -4,7 +4,7 @@
 
 **High-Performance, Resilient Telegram Archiving System**
 
-[![Rust](https://img.shields.io/badge/rust-1.75%2B-orange?logo=rust)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange?logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A CLI userbot to incrementally backup Telegram chats and groups (with media), run AI-powered weekly digests, and optionally push action items to Trello. Built for high throughput and ACID-safe persistence.
@@ -115,7 +115,7 @@ The application follows a **producer-consumer pipeline** with backpressure:
 
 ### Prerequisites
 
-- **Rust**: 1.75+ (stable) — [Install Rust](https://rustup.rs/)
+- **Rust**: 1.85+ (stable, 2024 edition) — [Install Rust](https://rustup.rs/)
 - **SQLite**: The `libsql` crate bundles SQLite; no system-level installation required.
 
 ### Build

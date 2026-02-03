@@ -8,7 +8,7 @@ use crate::usecases::{AnalysisService, SyncService, WatcherService};
 use async_trait::async_trait;
 use indicatif::{ProgressBar, ProgressStyle};
 use inquire::ui::{Color, RenderConfig, StyleSheet, Styled};
-use inquire::{set_global_render_config, Confirm, CustomType, MultiSelect, Select, Text};
+use inquire::{Confirm, CustomType, MultiSelect, Select, Text, set_global_render_config};
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;

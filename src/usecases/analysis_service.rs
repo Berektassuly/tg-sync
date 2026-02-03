@@ -157,7 +157,9 @@ impl AnalysisService {
             return;
         }
         let Some(tracker) = &self.task_tracker else {
-            warn!("Trello not configured (TRELLO_KEY, TRELLO_TOKEN, TRELLO_LIST_ID); skipping task sync");
+            warn!(
+                "Trello not configured (TRELLO_KEY, TRELLO_TOKEN, TRELLO_LIST_ID); skipping task sync"
+            );
             return;
         };
         for item in &result.action_items {

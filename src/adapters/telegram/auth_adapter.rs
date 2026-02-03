@@ -6,8 +6,8 @@
 use crate::domain::{DomainError, SignInResult};
 use crate::ports::AuthPort;
 use async_trait::async_trait;
-use grammers_client::client::{LoginToken, PasswordToken};
 use grammers_client::Client;
+use grammers_client::client::{LoginToken, PasswordToken};
 use tokio::sync::Mutex;
 
 /// Auth adapter. Wraps grammers Client for login/2FA. Same session as TgGateway via clone in main.

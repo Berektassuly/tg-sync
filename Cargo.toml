@@ -1,14 +1,15 @@
 [package]
 name = "tg-sync"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+rust-version = "1.85"
 description = "CLI userbot utility to incrementally backup Telegram chats/groups and media, process with Chatpack"
 authors = ["Berektassuly"]
 license = "MIT OR Apache-2.0"
 
 [dependencies]
 # Runtime
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1.49", features = ["full"] }
 
 # Telegram (MTProto)
 grammers-client = { git = "https://github.com/Lonami/grammers" }

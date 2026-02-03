@@ -1,10 +1,10 @@
 //! Cyberpunk/Neon ASCII banner with gradient (TG-SYNC).
 //! Uses embedded ANSI Shadow font for a solid/filled look.
 
-use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
 use crossterm::ExecutableCommand;
+use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
 use figlet_rs::FIGfont;
-use std::io::{stdout, Write};
+use std::io::{Write, stdout};
 
 /// ANSI Shadow FLF font embedded at compile time (solid/filled style).
 const ANSI_SHADOW_FONT: &str = include_str!("../../adapters/ui/fonts/ANSI_Shadow.flf");

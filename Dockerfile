@@ -5,7 +5,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 1: Planner — cache dependency layer separately from app code
 # ─────────────────────────────────────────────────────────────────────────────
-FROM rust:1.83-bookworm AS planner
+FROM rust:1.85-bookworm AS planner
 WORKDIR /build
 RUN cargo install cargo-chef
 COPY Cargo.toml Cargo.lock ./
@@ -17,7 +17,7 @@ RUN cargo chef prepare --recipe-path recipe.json
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 2: Builder — compile dependencies (cached) then application
 # ─────────────────────────────────────────────────────────────────────────────
-FROM rust:1.83-bookworm AS builder
+FROM rust:1.85-bookworm AS builder
 WORKDIR /build
 
 # Install build deps (OpenSSL for transitive native-tls; ca-certificates)

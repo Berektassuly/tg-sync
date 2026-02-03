@@ -42,6 +42,25 @@ pub struct AppConfig {
     /// AI model name. Defaults to "gpt-4o-mini". Read from TG_SYNC_AI_MODEL.
     #[serde(default)]
     pub ai_model: Option<String>,
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Task Tracker (Trello) Configuration
+    // ─────────────────────────────────────────────────────────────────────────
+    /// Trello API key. Read from TRELLO_KEY.
+    #[serde(default)]
+    pub trello_key: Option<String>,
+
+    /// Trello API token. Read from TRELLO_TOKEN.
+    #[serde(default)]
+    pub trello_token: Option<String>,
+
+    /// Trello board ID (optional; for reference). Read from TRELLO_BOARD_ID.
+    #[serde(default)]
+    pub trello_board_id: Option<String>,
+
+    /// Trello list ID where action-item cards are created. Read from TRELLO_LIST_ID.
+    #[serde(default)]
+    pub trello_list_id: Option<String>,
 }
 
 impl AppConfig {
@@ -125,5 +144,44 @@ impl AppConfig {
     /// Returns true if AI is configured (API key present).
     pub fn is_ai_configured(&self) -> bool {
         self.ai_api_key().is_some()
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Trello Configuration Helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Returns Trello API key from config or TRELLO_KEY env.
+    pub fn trello_key(&self) -> Option<String> {
+        self.trello_key
+            .clone()
+            .or_else(|| std::env::var("TRELLO_KEY").ok())
+    }
+
+    /// Returns Trello API token from config or TRELLO_TOKEN env.
+    pub fn trello_token(&self) -> Option<String> {
+        self.trello_token
+            .clone()
+            .or_else(|| std::env::var("TRELLO_TOKEN").ok())
+    }
+
+    /// Returns Trello board ID from config or TRELLO_BOARD_ID env (optional).
+    pub fn trello_board_id(&self) -> Option<String> {
+        self.trello_board_id
+            .clone()
+            .or_else(|| std::env::var("TRELLO_BOARD_ID").ok())
+    }
+
+    /// Returns Trello list ID from config or TRELLO_LIST_ID env.
+    pub fn trello_list_id(&self) -> Option<String> {
+        self.trello_list_id
+            .clone()
+            .or_else(|| std::env::var("TRELLO_LIST_ID").ok())
+    }
+
+    /// Returns true if Trello task tracker is fully configured.
+    pub fn is_trello_configured(&self) -> bool {
+        self.trello_key().is_some()
+            && self.trello_token().is_some()
+            && self.trello_list_id().is_some()
     }
 }

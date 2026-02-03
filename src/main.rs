@@ -6,12 +6,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tg_sync::adapters::ai::{MockAiAdapter, OpenAiAdapter};
+use tg_sync::adapters::integrations::trello::TrelloAdapter;
 use tg_sync::adapters::persistence::{sqlite_repo::SqliteRepo, state_json::StateJson};
 use tg_sync::adapters::telegram::{auth_adapter::GrammersAuthAdapter, client::GrammersTgGateway};
 use tg_sync::adapters::tools::chatpack::ChatpackProcessor;
 use tg_sync::adapters::ui::tui::TuiInputPort;
 use tg_sync::ports::{
-    AiPort, AnalysisLogPort, AuthPort, InputPort, RepoPort, StatePort, TgGateway,
+    AiPort, AnalysisLogPort, AuthPort, InputPort, RepoPort, StatePort, TaskTrackerPort, TgGateway,
 };
 use tg_sync::shared::config::DEFAULT_MEDIA_QUEUE_SIZE;
 use tg_sync::usecases::{AnalysisService, AuthService, MediaWorker, SyncService, WatcherService};
@@ -162,7 +163,23 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let reports_dir = data_path.join("reports");
-    let analysis_service = Arc::new(AnalysisService::new(ai_adapter, analysis_log, reports_dir));
+    let task_tracker: Option<Arc<dyn TaskTrackerPort>> = if cfg.is_trello_configured() {
+        info!("Trello task tracker enabled (TRELLO_KEY, TRELLO_TOKEN, TRELLO_LIST_ID)");
+        Some(Arc::new(TrelloAdapter::new(
+            cfg.trello_key().unwrap_or_default(),
+            cfg.trello_token().unwrap_or_default(),
+            cfg.trello_board_id().unwrap_or_default(),
+            cfg.trello_list_id().unwrap_or_default(),
+        )))
+    } else {
+        None
+    };
+    let analysis_service = Arc::new(AnalysisService::new(
+        ai_adapter,
+        analysis_log,
+        reports_dir,
+        task_tracker,
+    ));
 
     let input_port: Arc<dyn InputPort> = Arc::new(TuiInputPort::new(
         Arc::clone(&tg),

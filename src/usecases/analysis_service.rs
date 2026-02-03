@@ -7,7 +7,7 @@
 
 use crate::adapters::ai::messages_to_csv_chunked;
 use crate::domain::{AnalysisResult, DomainError, Message, WeekGroup};
-use crate::ports::{AiPort, AnalysisLogPort};
+use crate::ports::{AiPort, AnalysisLogPort, TaskTrackerPort};
 use chrono::{DateTime, Utc};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -24,10 +24,13 @@ const MAX_CHUNK_SIZE: usize = 50_000;
 /// 2. Generate CSV context for each week
 /// 3. Send to AI for analysis
 /// 4. Save results and generate Markdown reports
+/// 5. Optionally push action items to a task tracker (e.g. Trello)
 pub struct AnalysisService {
     ai: Arc<dyn AiPort>,
     repo: Arc<dyn AnalysisLogPort>,
     reports_dir: PathBuf,
+    /// Optional task tracker. When None, action items are only written to the report.
+    task_tracker: Option<Arc<dyn TaskTrackerPort>>,
 }
 
 impl AnalysisService {
@@ -37,11 +40,18 @@ impl AnalysisService {
     /// * `ai` - AI port implementation (OpenAI, Mock, etc.)
     /// * `repo` - Repository implementing AnalysisLogPort
     /// * `reports_dir` - Directory to save generated reports
-    pub fn new(ai: Arc<dyn AiPort>, repo: Arc<dyn AnalysisLogPort>, reports_dir: PathBuf) -> Self {
+    /// * `task_tracker` - Optional task tracker; when None, action items are only in the report
+    pub fn new(
+        ai: Arc<dyn AiPort>,
+        repo: Arc<dyn AnalysisLogPort>,
+        reports_dir: PathBuf,
+        task_tracker: Option<Arc<dyn TaskTrackerPort>>,
+    ) -> Self {
         Self {
             ai,
             repo,
             reports_dir,
+            task_tracker,
         }
     }
 
@@ -49,17 +59,35 @@ impl AnalysisService {
     ///
     /// Returns paths to generated Markdown reports.
     /// Skips already-analyzed weeks (idempotent).
-    pub async fn analyze_chat(&self, chat_id: i64) -> Result<Vec<PathBuf>, DomainError> {
+    ///
+    /// # Arguments
+    /// * `chat_id` - The chat to analyze
+    /// * `single_week` - If true, only the most recent unanalyzed week is processed; older weeks are ignored
+    pub async fn analyze_chat(
+        &self,
+        chat_id: i64,
+        single_week: bool,
+    ) -> Result<Vec<PathBuf>, DomainError> {
         // Ensure reports directory exists
         fs::create_dir_all(&self.reports_dir)
             .await
             .map_err(|e| DomainError::Repo(format!("Failed to create reports dir: {}", e)))?;
 
-        // Get weeks that haven't been analyzed yet
-        let unanalyzed_weeks = self.repo.get_unanalyzed_weeks(chat_id).await?;
+        // Get weeks that haven't been analyzed yet (chronological order, oldest first)
+        let mut unanalyzed_weeks = self.repo.get_unanalyzed_weeks(chat_id).await?;
         if unanalyzed_weeks.is_empty() {
             info!(chat_id, "no unanalyzed weeks found");
             return Ok(Vec::new());
+        }
+
+        // If single_week mode, keep only the last (most recent) week
+        if single_week {
+            unanalyzed_weeks = unanalyzed_weeks
+                .into_iter()
+                .rev()
+                .take(1)
+                .collect::<Vec<_>>();
+            info!(chat_id, week = %unanalyzed_weeks[0], "single_week: analyzing only latest unanalyzed week");
         }
 
         info!(
@@ -74,7 +102,7 @@ impl AnalysisService {
         let mut reports = Vec::new();
 
         for (week, messages) in weeks_data {
-            // Skip if already analyzed
+            // Skip if not in our unanalyzed set
             if !unanalyzed_weeks.contains(&week) {
                 continue;
             }
@@ -100,6 +128,9 @@ impl AnalysisService {
             // Persist result
             self.repo.save_analysis(&result).await?;
 
+            // Push action items to task tracker if configured
+            self.send_action_items_to_tracker(&result).await;
+
             // Generate and save report
             let report_path = self.generate_report(&result).await?;
             reports.push(report_path);
@@ -118,6 +149,36 @@ impl AnalysisService {
     pub async fn get_available_weeks(&self, chat_id: i64) -> Result<Vec<WeekGroup>, DomainError> {
         let weeks_data = self.repo.get_messages_by_week(chat_id).await?;
         Ok(weeks_data.into_iter().map(|(week, _)| week).collect())
+    }
+
+    /// Send action items to the task tracker (if configured). Logs warnings on failure but does not fail the analysis.
+    async fn send_action_items_to_tracker(&self, result: &AnalysisResult) {
+        if result.action_items.is_empty() {
+            return;
+        }
+        let Some(tracker) = &self.task_tracker else {
+            warn!("Trello not configured (TRELLO_KEY, TRELLO_TOKEN, TRELLO_LIST_ID); skipping task sync");
+            return;
+        };
+        for item in &result.action_items {
+            let title = item.description.as_str();
+            let desc_parts: Vec<String> = [
+                item.owner.as_ref().map(|o| format!("Owner: {}", o)),
+                item.priority.as_ref().map(|p| format!("Priority: {}", p)),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            let description = if desc_parts.is_empty() {
+                String::new()
+            } else {
+                format!("{}\n\nWeek: {}", desc_parts.join("\n"), result.week_group)
+            };
+            let due = item.deadline.clone();
+            if let Err(e) = tracker.create_task(title, &description, due).await {
+                warn!(chat_id = result.chat_id, week = %result.week_group, title, error = %e, "failed to create task in tracker");
+            }
+        }
     }
 
     /// Generate CSV chunks, each under MAX_CHUNK_SIZE characters.

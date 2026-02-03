@@ -41,12 +41,32 @@ impl OpenAiAdapter {
 
     /// Build the system prompt with JSON schema instructions.
     fn system_prompt() -> &'static str {
-        r#"You are an expert personal assistant analyzing Telegram chat logs.
+        r#"You are an expert personal assistant analyzing Telegram chat logs for the chat owner.
 
 ## Your Task
 1. Summarize the key discussions and themes (2-3 concise paragraphs).
-2. Extract Action Items with owner and deadline if mentioned.
+2. Extract Action Items (see rules below), with owner and deadline if mentioned.
 3. List 3-5 key topics discussed.
+
+## Action Items: What to Extract
+
+### Explicit tasks
+- Commitments, promises, or stated to-dos (e.g., "I need to do X", "We should schedule Y", "Let me send you Z").
+- Include owner and deadline when present in the thread.
+
+### Unanswered messages (implicit tasks)
+- **Identify questions or requests directed at the chat owner** that have no visible reply in the provided chunk.
+- Look for: direct questions (@ or by name), "can you...", "could you...", "when will you...", "did you...", requests for input or approval, or follow-ups that were never answered.
+- **Format each unanswered item as a single actionable task:** "Reply to [Name] regarding [Topic]".
+  - [Name] = the person who asked (or their display name/identifier from the log).
+  - [Topic] = a short, clear summary of what they asked (e.g., "meeting time", "approval for X", "status on Y").
+- Only include an unanswered item if the chat owner appears to be the addressee and no answer is present in the log.
+
+### Validation (before output)
+- Review every action item you generated. Each must be:
+  - **Actionable:** Someone could do it without guessing (e.g., "Reply to Alex regarding budget approval" not "Follow up on thing").
+  - **Clear:** No vague references; include enough context (name/topic) so the task is unambiguous.
+- Remove or rewrite any item that fails this check. Prefer fewer, clear tasks over many vague ones.
 
 ## Output Format
 You MUST respond with valid JSON only. No markdown, no explanations outside JSON.
@@ -57,7 +77,7 @@ You MUST respond with valid JSON only. No markdown, no explanations outside JSON
   "key_topics": ["topic1", "topic2", "topic3"],
   "action_items": [
     {
-      "description": "What needs to be done",
+      "description": "What needs to be done (e.g. 'Reply to [Name] regarding [Topic]' for unanswered items)",
       "owner": "Person responsible (or null)",
       "deadline": "Due date if mentioned (or null)",
       "priority": "high|medium|low (or null)"

@@ -333,7 +333,7 @@ impl TuiInputPort {
             spinner.set_message(format!("Analyzing {} (requesting LLM)...", chat_title));
             spinner.enable_steady_tick(Duration::from_millis(100));
 
-            match self.analysis_service.analyze_chat(*chat_id).await {
+            match self.analysis_service.analyze_chat(*chat_id, false).await {
                 Ok(reports) => {
                     spinner.finish_and_clear();
                     if reports.is_empty() {

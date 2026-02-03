@@ -31,4 +31,7 @@ pub enum DomainError {
 
     #[error("AI analysis failed: {0}")]
     Ai(String),
+
+    #[error("Task tracker error: {0}")]
+    TaskTracker(String),
 }

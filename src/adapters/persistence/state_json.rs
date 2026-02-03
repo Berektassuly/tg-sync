@@ -6,6 +6,7 @@ use crate::domain::DomainError;
 use crate::ports::StatePort;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::ErrorKind;
 use std::path::Path;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
@@ -31,12 +32,20 @@ impl StateJson {
     }
 
     /// Load state from disk. Call after construction or when path changes.
+    /// Only "file not found" yields default state; IO or parse errors return DomainError::State.
     pub async fn load(&self) -> Result<(), DomainError> {
-        let data = match fs::read_to_string(&self.path).await {
-            Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
-            Err(_) => StateData::default(),
-        };
-        *self.cache.write().await = data;
+        match fs::read_to_string(&self.path).await {
+            Ok(s) => {
+                let data = serde_json::from_str(&s).map_err(|e| {
+                    DomainError::State(format!("CORRUPTED STATE FILE at {:?}: {}", self.path, e))
+                })?;
+                *self.cache.write().await = data;
+            }
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                *self.cache.write().await = StateData::default();
+            }
+            Err(e) => return Err(DomainError::State(e.to_string())),
+        }
         Ok(())
     }
 

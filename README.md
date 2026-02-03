@@ -128,6 +128,20 @@ cargo build --release
 
 The binary will be available at `target/release/tg-sync.exe` (Windows) or `target/release/tg-sync` (Unix).
 
+### Docker (Production)
+
+```bash
+# 1. Copy .env.example to .env and set TG_SYNC_API_ID, TG_SYNC_API_HASH
+# 2. Build and run interactively (first run will prompt for Telegram auth)
+docker compose up --build -it
+
+# Or build image only
+docker build -t tg-sync:latest .
+docker run -it --env-file .env -v tg-sync-data:/app/data -v tg-sync-session:/app/session tg-sync:latest
+```
+
+Requires Docker 20.10+ with BuildKit. The TUI is interactive—use `-it` for prompts. Session and data are persisted via volumes.
+
 ---
 
 ## Configuration

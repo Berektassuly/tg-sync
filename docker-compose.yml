@@ -1,0 +1,39 @@
+# tg-sync — Production Docker Compose
+# Usage:
+#   1. Copy .env.example to .env and set TG_SYNC_API_ID, TG_SYNC_API_HASH
+#   2. docker compose up -it  (interactive TUI; first run will prompt for Telegram auth)
+#   3. Select "Watcher / Daemon" for long-running sync
+
+services:
+  tg-sync:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tg-sync:latest
+    container_name: tg-sync
+
+    # Interactive TUI requires TTY and stdin
+    stdin_open: true
+    tty: true
+
+    env_file:
+      - .env
+
+    environment:
+      TG_SYNC_DATA_DIR: /app/data
+      TG_SYNC_SESSION_PATH: /app/session/session.db
+      # Optional: set RUST_LOG for tracing (e.g. debug, info, warn)
+      # RUST_LOG: info
+
+    volumes:
+      # Persist session (MTProto auth) — required across restarts
+      - tg-sync-session:/app/session
+      # Persist data: messages.db, state.json, media, reports
+      - tg-sync-data:/app/data
+
+    # Restart policy for Watcher/Daemon mode (runs until stopped)
+    restart: unless-stopped
+
+volumes:
+  tg-sync-session:
+  tg-sync-data:

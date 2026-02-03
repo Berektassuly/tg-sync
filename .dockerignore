@@ -1,0 +1,35 @@
+# Build artifacts (rebuilt in container)
+/target/
+
+# Git
+/.git/
+/.gitignore
+
+# Secrets and local data (never bake into image)
+.env
+.env.*
+!.env.example
+session.db
+session.db-journal
+/data/
+
+# IDE / Editor
+/.idea/
+/.vscode/
+*.swp
+*.swo
+
+# Docs and misc (not needed for build)
+*.md
+!README.md
+LICENSE
+VERIFICATION.md
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore

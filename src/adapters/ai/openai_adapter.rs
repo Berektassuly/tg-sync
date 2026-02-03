@@ -62,10 +62,19 @@ impl OpenAiAdapter {
   - [Topic] = a short, clear summary of what they asked (e.g., "meeting time", "approval for X", "status on Y").
 - Only include an unanswered item if the chat owner appears to be the addressee and no answer is present in the log.
 
+### Strict Identity Resolution (required)
+- **Never use the term "unknown" as a placeholder for a person's name** in any Action Item.
+- When generating tasks (e.g. "Reply to...", "Send CV to..."), resolve the identity using this hierarchy:
+  1. **Explicit Name:** Use the name if mentioned in the message text or signature.
+  2. **User Identifier:** If no name is textually present, you MUST use the value from the "User" column of the provided CSV (e.g. "Reply to User 12345 regarding ...").
+  3. **Contextual Role:** If the User column is missing or not an identifier, infer a specific role from the conversation (e.g. "Recruiter", "Client", "Hiring Manager") and use that (e.g. "Reply to Recruiter regarding ...").
+- **Constraint:** Any Action Item description that contains the word "unknown" referring to a person is forbidden. Use the User ID or a contextual role instead.
+
 ### Validation (before output)
 - Review every action item you generated. Each must be:
   - **Actionable:** Someone could do it without guessing (e.g., "Reply to Alex regarding budget approval" not "Follow up on thing").
   - **Clear:** No vague references; include enough context (name/topic) so the task is unambiguous.
+  - **No "unknown" for people:** No action item may use "unknown" as a person's name; use User column value or a contextual role instead.
 - Remove or rewrite any item that fails this check. Prefer fewer, clear tasks over many vague ones.
 
 ## Output Format
@@ -281,11 +290,21 @@ impl AiPort for OpenAiAdapter {
         let action_items: Vec<ActionItem> = analysis
             .action_items
             .into_iter()
-            .map(|item| ActionItem {
-                description: item.description,
-                owner: item.owner,
-                deadline: item.deadline,
-                priority: item.priority,
+            .filter_map(|item| {
+                if item.description.to_lowercase().contains("unknown") {
+                    warn!(
+                        description = %item.description,
+                        "dropping action item: description must not contain 'unknown' for a person; use User ID or contextual role"
+                    );
+                    None
+                } else {
+                    Some(ActionItem {
+                        description: item.description,
+                        owner: item.owner,
+                        deadline: item.deadline,
+                        priority: item.priority,
+                    })
+                }
             })
             .collect();
 

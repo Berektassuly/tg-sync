@@ -93,6 +93,23 @@ impl AiPort for MockAiAdapter {
             analyzed_at,
         })
     }
+
+    async fn summarize(&self, context: &str) -> Result<String, DomainError> {
+        info!(
+            context_len = context.len(),
+            "[MOCK] Simulating AI summarization"
+        );
+
+        tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
+
+        let line_count = context.lines().count().saturating_sub(1).max(0);
+        Ok(format!(
+            "[MOCK] Intermediate summary of {} lines of chat logs. \
+             Key events and topics from this chunk. In production, the LLM would \
+             extract salient points for the reduce phase.",
+            line_count
+        ))
+    }
 }
 
 #[cfg(test)]

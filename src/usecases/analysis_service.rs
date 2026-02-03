@@ -1,8 +1,11 @@
 //! Analysis service. Orchestrates AI-powered chat analysis workflow.
 //!
 //! Coordinates between repository (data), AI adapter (analysis), and filesystem (reports).
+//!
+//! Implements Map-Reduce pattern for large chats: chunks are summarized separately,
+//! then combined for final analysis (avoids OOM and token limit exceeded).
 
-use crate::adapters::ai::messages_to_csv;
+use crate::adapters::ai::messages_to_csv_chunked;
 use crate::domain::{AnalysisResult, DomainError, Message, WeekGroup};
 use crate::ports::{AiPort, AnalysisLogPort};
 use chrono::{DateTime, Utc};
@@ -10,6 +13,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs;
 use tracing::{info, warn};
+
+/// Maximum characters per chunk. Conservative for LLM token limits (~15k tokens).
+const MAX_CHUNK_SIZE: usize = 50_000;
 
 /// Service for AI-powered chat analysis.
 ///
@@ -85,11 +91,11 @@ impl AnalysisService {
                 "analyzing week"
             );
 
-            // Generate CSV context
-            let csv_content = self.messages_to_csv_string(&messages)?;
+            // Generate CSV chunks (avoids memory bomb for large weeks)
+            let chunks = self.messages_to_csv_chunked(&messages, MAX_CHUNK_SIZE)?;
 
-            // Call AI for analysis
-            let result = self.ai.analyze(chat_id, &week, &csv_content).await?;
+            // Map-Reduce: single chunk -> direct analyze; multiple chunks -> summarize then analyze
+            let result = self.analyze_week_chunks(chat_id, &week, &chunks).await?;
 
             // Persist result
             self.repo.save_analysis(&result).await?;
@@ -114,10 +120,43 @@ impl AnalysisService {
         Ok(weeks_data.into_iter().map(|(week, _)| week).collect())
     }
 
-    /// Convert messages to CSV string using the csv crate.
-    fn messages_to_csv_string(&self, messages: &[Message]) -> Result<String, DomainError> {
-        messages_to_csv(messages)
-            .map_err(|e| DomainError::Ai(format!("Failed to generate CSV: {}", e)))
+    /// Generate CSV chunks, each under MAX_CHUNK_SIZE characters.
+    fn messages_to_csv_chunked(
+        &self,
+        messages: &[Message],
+        max_size: usize,
+    ) -> Result<Vec<String>, DomainError> {
+        messages_to_csv_chunked(messages, max_size)
+            .map_err(|e| DomainError::Ai(format!("Failed to generate CSV chunks: {}", e)))
+    }
+
+    /// Analyze week data: single chunk -> direct analyze; multiple chunks -> Map-Reduce.
+    async fn analyze_week_chunks(
+        &self,
+        chat_id: i64,
+        week: &WeekGroup,
+        chunks: &[String],
+    ) -> Result<AnalysisResult, DomainError> {
+        if chunks.is_empty() {
+            return Err(DomainError::Ai("No chunks to analyze".to_string()));
+        }
+
+        if chunks.len() == 1 {
+            // Case A (Small): Single chunk, call analyze directly
+            self.ai.analyze(chat_id, week, &chunks[0]).await
+        } else {
+            // Case B (Large): Map each chunk to summary, Reduce to final analysis
+            let mut summaries = Vec::with_capacity(chunks.len());
+            for (i, chunk) in chunks.iter().enumerate() {
+                info!(chat_id, week = %week, chunk = i + 1, total = chunks.len(), "map: summarizing chunk");
+                let summary = self.ai.summarize(chunk).await?;
+                summaries.push(summary);
+            }
+
+            let meta_context = summaries.join("\n\n");
+            info!(chat_id, week = %week, summaries_len = meta_context.len(), "reduce: analyzing combined summaries");
+            self.ai.analyze(chat_id, week, &meta_context).await
+        }
     }
 
     /// Generate a Markdown report from analysis result.

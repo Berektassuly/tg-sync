@@ -147,6 +147,18 @@ pub trait AiPort: Send + Sync {
         week_group: &WeekGroup,
         context_csv: &str,
     ) -> Result<AnalysisResult, DomainError>;
+
+    /// Summarize chat logs (Map phase). Returns plain-text intermediate summary.
+    ///
+    /// Used when context exceeds token limits: each chunk is summarized separately,
+    /// then the summaries are combined for the final analysis.
+    ///
+    /// # Arguments
+    /// * `context` - CSV-formatted chat log chunk or combined summaries
+    ///
+    /// # Errors
+    /// Returns `DomainError::Ai` if the LLM API fails.
+    async fn summarize(&self, context: &str) -> Result<String, DomainError>;
 }
 
 /// Analysis log persistence. Track which weeks have been analyzed.

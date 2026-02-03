@@ -70,11 +70,19 @@ If there are no action items, return an empty array for action_items.
 Keep summaries factual and concise. Focus on actionable information."#
     }
 
-    /// Build the user prompt with CSV data.
+    /// Build the user prompt with CSV data or combined summaries (reduce phase).
     fn user_prompt(context_csv: &str) -> String {
         format!(
-            "Analyze the following chat log for the week. The format is CSV with columns: Date, User ID, Message.\n\n{}",
+            "Analyze the following chat log context for the week. It may be CSV format (Date;User;Message) or combined summaries from multiple chunks.\n\n{}",
             context_csv
+        )
+    }
+
+    /// Build the summarization prompt for the Map phase.
+    fn summarize_prompt(context: &str) -> String {
+        format!(
+            "Summarize the following chat logs, highlighting key events and topics.\n\n{}",
+            context
         )
     }
 
@@ -277,6 +285,59 @@ impl AiPort for OpenAiAdapter {
             action_items,
             analyzed_at,
         })
+    }
+
+    async fn summarize(&self, context: &str) -> Result<String, DomainError> {
+        info!(
+            context_len = context.len(),
+            "sending context to AI for summarization"
+        );
+
+        let request = ChatRequest {
+            model: self.model.clone(),
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: Self::summarize_prompt(context),
+            }],
+            temperature: 0.3,
+            response_format: None, // Plain text, no JSON
+        };
+
+        let response = self
+            .client
+            .post(&self.api_url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| DomainError::Ai(format!("HTTP request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            warn!(status = %status, body = %text, "AI API returned error");
+            return Err(DomainError::Ai(format!(
+                "API error {}: {}",
+                status,
+                text.chars().take(200).collect::<String>()
+            )));
+        }
+
+        let chat_response: ChatResponse = response
+            .json()
+            .await
+            .map_err(|e| DomainError::Ai(format!("Failed to parse API response: {}", e)))?;
+
+        let summary = chat_response
+            .choices
+            .first()
+            .map(|c| c.message.content.trim().to_string())
+            .ok_or_else(|| DomainError::Ai("No response choices returned".to_string()))?;
+
+        info!(summary_len = summary.len(), "summarization complete");
+
+        Ok(summary)
     }
 }
 

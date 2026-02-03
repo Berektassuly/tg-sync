@@ -12,8 +12,9 @@ use grammers_client::Client;
 use grammers_client::InvocationError;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tracing::{debug, info, warn};
 
 /// Audit §4.1: FloodWait threshold in seconds. Waits below this sleep; waits >= this return error.
@@ -27,6 +28,9 @@ pub struct GrammersTgGateway {
     /// Audit §2.1: Cache full Peer objects by chat_id to avoid iter_dialogs on every call.
     /// Stores the Peer (not just InputPeer) so we can call to_ref() for download operations.
     peer_cache: Mutex<HashMap<i64, grammers_client::peer::Peer>>,
+    /// Audit: Request coalescing (singleflight). If a key exists, a resolution is in progress;
+    /// waiters clone the Notify and wait; the leader removes the entry and notifies on completion.
+    inflight_requests: Mutex<HashMap<i64, Arc<Notify>>>,
 }
 
 impl GrammersTgGateway {
@@ -37,25 +41,57 @@ impl GrammersTgGateway {
             client,
             export_delay_ms,
             peer_cache: Mutex::new(HashMap::new()),
+            inflight_requests: Mutex::new(HashMap::new()),
         }
     }
 
     /// Resolve chat_id to InputPeer, using cache to avoid repeated iter_dialogs (FLOOD_WAIT risk).
     /// Audit §2.1: Caches the full Peer object so download_media can use to_ref() later.
+    /// Audit: Singleflight — only one iter_dialogs in flight per chat_id; others wait via Notify.
     async fn resolve_input_peer(&self, chat_id: i64) -> Result<tl::enums::InputPeer, DomainError> {
-        // Check cache first
-        {
-            let cache = self.peer_cache.lock().await;
-            if let Some(peer) = cache.get(&chat_id) {
-                // Convert cached Peer to InputPeer via PeerRef
+        loop {
+            // 1. Fast path: check cache (no lock held across await)
+            if let Some(peer) = self.get_cached_peer(chat_id).await {
                 if let Some(peer_ref) = peer.to_ref().await {
                     return Ok(peer_ref.into());
                 }
-                // If to_ref() fails, fall through to re-fetch
+                // to_ref() failed, fall through to re-fetch
             }
-        }
 
-        // Not in cache or cache stale: iterate dialogs once
+            // 2. Coalescing: either wait for an in-flight resolution or become the leader
+            {
+                let mut inflight = self.inflight_requests.lock().await;
+                if let Some(notify) = inflight.get(&chat_id) {
+                    let notify = Arc::clone(notify);
+                    drop(inflight);
+                    notify.notified().await;
+                    continue; // Re-check cache; leader may have populated it
+                }
+                inflight.insert(chat_id, Arc::new(Notify::new()));
+            }
+
+            // 3. We are the leader: one network request for this chat_id
+            let result = self.resolve_input_peer_fetch(chat_id).await;
+
+            // 4. Remove from inflight and wake waiters (minimal critical section)
+            {
+                let mut inflight = self.inflight_requests.lock().await;
+                let notify = inflight.remove(&chat_id);
+                drop(inflight);
+                if let Some(n) = notify {
+                    n.notify_waiters();
+                }
+            }
+
+            return result;
+        }
+    }
+
+    /// Performs the actual iter_dialogs fetch. Call only from the singleflight leader.
+    async fn resolve_input_peer_fetch(
+        &self,
+        chat_id: i64,
+    ) -> Result<tl::enums::InputPeer, DomainError> {
         let peer = {
             let mut dialogs = self.client.iter_dialogs();
             let mut found = None;
@@ -75,10 +111,8 @@ impl GrammersTgGateway {
             })?
         };
 
-        // Cache the full Peer object for future use
         self.peer_cache.lock().await.insert(chat_id, peer.clone());
 
-        // Convert to InputPeer
         let peer_ref = peer
             .to_ref()
             .await

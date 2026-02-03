@@ -1,6 +1,7 @@
 //! Wiring & DI. Entry point: bootstrap adapters, inject into services, run UI.
 //! No business logic here; authentication is delegated to AuthService.
 
+use dotenv::dotenv;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,14 +24,26 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let env_loaded = dotenv();
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    match &env_loaded {
+        Ok(path) => info!(path = %path.display(), "loaded .env"),
+        Err(_) => info!(cwd = %cwd.display(), "no .env found (check CWD)"),
+    }
+
     tg_sync::adapters::ui::init_ui();
 
     let cfg = tg_sync::shared::config::AppConfig::load().unwrap_or_default();
+    if std::env::var("TG_SYNC_AI_API_KEY").is_ok() {
+        info!("TG_SYNC_AI_API_KEY is set (env)");
+    } else {
+        info!("TG_SYNC_AI_API_KEY is not set in env");
+    }
     let api_hash = cfg
         .api_hash
         .clone()

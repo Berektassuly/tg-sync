@@ -151,6 +151,7 @@ mod tests {
             media: None,
             from_user_id: Some(456),
             reply_to_msg_id: None,
+            edit_history: None,
         }];
 
         let csv = messages_to_csv(&messages).unwrap();
@@ -170,6 +171,7 @@ mod tests {
             media: None,
             from_user_id: Some(456),
             reply_to_msg_id: None,
+            edit_history: None,
         }];
 
         let csv = messages_to_csv(&messages).unwrap();
@@ -189,6 +191,7 @@ mod tests {
             media: None,
             from_user_id: Some(456),
             reply_to_msg_id: None,
+            edit_history: None,
         }];
 
         let chunks = messages_to_csv_chunked(&messages, 50_000).unwrap();
@@ -209,6 +212,7 @@ mod tests {
                 media: None,
                 from_user_id: Some(456),
                 reply_to_msg_id: None,
+                edit_history: None,
             });
         }
 

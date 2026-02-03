@@ -4,7 +4,7 @@
 //! Single `messages` table with (chat_id, id) as primary key; batch saves use INSERT OR IGNORE.
 //! All chats share one database file: data/messages.db
 
-use crate::domain::{AnalysisResult, DomainError, MediaReference, Message, WeekGroup};
+use crate::domain::{AnalysisResult, DomainError, MediaReference, Message, MessageEdit, WeekGroup};
 use crate::ports::{AnalysisLogPort, EntityRegistry, RepoPort};
 use libsql::{params, Database};
 use std::collections::{HashMap, HashSet};
@@ -20,8 +20,13 @@ CREATE TABLE IF NOT EXISTS messages (
     media_json TEXT,
     from_user_id INTEGER,
     reply_to_msg_id INTEGER,
+    history_json TEXT NOT NULL DEFAULT '[]',
     PRIMARY KEY (chat_id, id)
 )"#;
+
+/// Migration: add history_json to existing databases that were created before message versioning.
+const MIGRATION_ADD_HISTORY_JSON: &str =
+    "ALTER TABLE messages ADD COLUMN history_json TEXT NOT NULL DEFAULT '[]'";
 const MESSAGES_INDEX: &str =
     "CREATE INDEX IF NOT EXISTS idx_messages_chat_date ON messages (chat_id, date DESC)";
 
@@ -111,6 +116,13 @@ impl SqliteRepo {
         conn.execute(MESSAGES_TABLE, ())
             .await
             .map_err(|e| DomainError::Repo(e.to_string()))?;
+        // Add history_json to existing DBs that predate message versioning (idempotent).
+        if let Err(e) = conn.execute(MIGRATION_ADD_HISTORY_JSON, ()).await {
+            let msg = e.to_string();
+            if !msg.contains("duplicate column name") {
+                return Err(DomainError::Repo(msg));
+            }
+        }
         conn.execute(MESSAGES_INDEX, ())
             .await
             .map_err(|e| DomainError::Repo(e.to_string()))?;
@@ -150,6 +162,18 @@ impl SqliteRepo {
     fn json_to_media(s: Option<&str>) -> Option<MediaReference> {
         s.and_then(|s| serde_json::from_str(s).ok())
     }
+
+    fn json_to_edit_history(s: Option<&str>) -> Option<Vec<MessageEdit>> {
+        let s = s.unwrap_or("[]").trim();
+        if s.is_empty() || s == "[]" {
+            return None;
+        }
+        match serde_json::from_str::<Vec<MessageEdit>>(s) {
+            Ok(v) if v.is_empty() => None,
+            Ok(v) => Some(v),
+            _ => None,
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -180,9 +204,19 @@ impl RepoPort for SqliteRepo {
             let media_json = Self::media_to_json(&m.media);
             tx.execute(
                 r#"
-                INSERT INTO messages (chat_id, id, date, text, media_json, from_user_id, reply_to_msg_id)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                ON CONFLICT (chat_id, id) DO NOTHING
+                INSERT INTO messages (chat_id, id, date, text, media_json, from_user_id, reply_to_msg_id, history_json)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '[]')
+                ON CONFLICT (chat_id, id) DO UPDATE SET
+                    date = excluded.date,
+                    text = excluded.text,
+                    media_json = excluded.media_json,
+                    from_user_id = excluded.from_user_id,
+                    reply_to_msg_id = excluded.reply_to_msg_id,
+                    history_json = CASE
+                        WHEN messages.text != excluded.text
+                        THEN json_insert(COALESCE(messages.history_json, '[]'), '$[#]', json_object('date', messages.date, 'text', messages.text))
+                        ELSE COALESCE(messages.history_json, '[]')
+                    END
                 "#,
                 params![chat_id, m.id, m.date, m.text.as_str(), media_json, m.from_user_id, m.reply_to_msg_id],
             )
@@ -208,7 +242,7 @@ impl RepoPort for SqliteRepo {
         let mut rows = conn
             .query(
                 r#"
-                SELECT chat_id, id, date, text, media_json, from_user_id, reply_to_msg_id
+                SELECT chat_id, id, date, text, media_json, from_user_id, reply_to_msg_id, history_json
                 FROM messages
                 WHERE chat_id = ?1
                 ORDER BY date DESC
@@ -231,6 +265,7 @@ impl RepoPort for SqliteRepo {
             let media_json: Option<String> = row.get(4).ok();
             let from_user_id: Option<i64> = row.get(5).ok();
             let reply_to_msg_id: Option<i32> = row.get(6).ok();
+            let edit_history = Self::json_to_edit_history(row.get::<String>(7).ok().as_deref());
             messages.push(Message {
                 id,
                 chat_id,
@@ -239,6 +274,7 @@ impl RepoPort for SqliteRepo {
                 media: Self::json_to_media(media_json.as_deref()),
                 from_user_id,
                 reply_to_msg_id,
+                edit_history,
             });
         }
         Ok(messages)
@@ -464,7 +500,7 @@ impl AnalysisLogPort for SqliteRepo {
                 r#"
                 SELECT
                     strftime('%Y-%W', date, 'unixepoch') as week_group,
-                    chat_id, id, date, text, media_json, from_user_id, reply_to_msg_id
+                    chat_id, id, date, text, media_json, from_user_id, reply_to_msg_id, history_json
                 FROM messages
                 WHERE chat_id = ?1
                   AND text != ''
@@ -494,6 +530,7 @@ impl AnalysisLogPort for SqliteRepo {
             let media_json: Option<String> = row.get(5).ok();
             let from_user_id: Option<i64> = row.get(6).ok();
             let reply_to_msg_id: Option<i32> = row.get(7).ok();
+            let edit_history = Self::json_to_edit_history(row.get::<String>(8).ok().as_deref());
 
             let message = Message {
                 id,
@@ -503,6 +540,7 @@ impl AnalysisLogPort for SqliteRepo {
                 media: Self::json_to_media(media_json.as_deref()),
                 from_user_id,
                 reply_to_msg_id,
+                edit_history,
             };
 
             if !week_map.contains_key(&week_str) {
@@ -787,6 +825,62 @@ mod tests {
         assert_eq!(
             count, 1,
             "Only the regular message should remain after filtering"
+        );
+    }
+
+    /// Message versioning: saving the same message ID with new text appends the previous version to edit_history.
+    #[tokio::test]
+    async fn test_edit_history_versioning() {
+        use std::path::PathBuf;
+
+        let base_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap())
+            .join("target")
+            .join("test_edit_history_db");
+        let repo = SqliteRepo::connect(&base_dir).await.expect("connect");
+
+        let chat_id = 999i64;
+        let msg_id = 1i32;
+        let ts_a = 1704067200i64;
+        let ts_b = 1704153600i64;
+
+        let msg_a = Message {
+            id: msg_id,
+            chat_id,
+            date: ts_a,
+            text: "Text A".to_string(),
+            media: None,
+            from_user_id: None,
+            reply_to_msg_id: None,
+            edit_history: None,
+        };
+        repo.save_messages(chat_id, &[msg_a]).await.unwrap();
+
+        let msg_b = Message {
+            id: msg_id,
+            chat_id,
+            date: ts_b,
+            text: "Text B".to_string(),
+            media: None,
+            from_user_id: None,
+            reply_to_msg_id: None,
+            edit_history: None,
+        };
+        repo.save_messages(chat_id, &[msg_b]).await.unwrap();
+
+        let messages = repo.get_messages(chat_id, 10, 0).await.unwrap();
+        assert_eq!(messages.len(), 1, "should have one message");
+        let m = &messages[0];
+        assert_eq!(m.text, "Text B", "current text should be B");
+        let history = m
+            .edit_history
+            .as_ref()
+            .expect("edit_history should be present");
+        assert!(!history.is_empty(), "edit_history should not be empty");
+        assert_eq!(history.len(), 1, "one prior version");
+        assert_eq!(history[0].text, "Text A", "prior version should be Text A");
+        assert_eq!(
+            history[0].date, ts_a,
+            "prior version should have original date"
         );
     }
 }

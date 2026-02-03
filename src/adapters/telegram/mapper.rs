@@ -70,7 +70,8 @@ pub fn message_to_domain(
             let media_ref: Option<MediaReference> = extract_media_ref(m, chat_id);
             (
                 m.id,
-                m.date,
+                // Prefer edit_date when present so the "current" version has the edit timestamp.
+                m.edit_date.map(|d| d as i64).unwrap_or(m.date as i64),
                 text,
                 from,
                 m.reply_to
@@ -90,11 +91,12 @@ pub fn message_to_domain(
         Message {
             id,
             chat_id,
-            date: date as i64,
+            date,
             text,
             media: media_ref.clone(),
             from_user_id,
             reply_to_msg_id: reply_to,
+            edit_history: None,
         },
         media_ref,
     ))

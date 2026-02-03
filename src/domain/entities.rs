@@ -32,6 +32,13 @@ pub enum ChatType {
     Channel,
 }
 
+/// One prior version of a message (used for edit history).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageEdit {
+    pub date: i64,
+    pub text: String,
+}
+
 /// A single message from a chat.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
@@ -42,6 +49,9 @@ pub struct Message {
     pub media: Option<MediaReference>,
     pub from_user_id: Option<i64>,
     pub reply_to_msg_id: Option<i32>,
+    /// Previous versions when the message was edited. Oldest first.
+    #[serde(default)]
+    pub edit_history: Option<Vec<MessageEdit>>,
 }
 
 /// Reference to downloadable media. Sent to media pipeline.
